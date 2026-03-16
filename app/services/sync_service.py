@@ -5,7 +5,7 @@ from app.database.mysql_db import get_mysql_connection
 from app.database.sqlite_db import get_connection
 from app.utils.logger import get_logger
 from app.utils.config import SYNC_VISITS_INTERVAL
-from app.state import AppState
+from app.services.state import AppState
 
 logger = get_logger("SyncService")
 
