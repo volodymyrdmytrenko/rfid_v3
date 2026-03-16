@@ -12,7 +12,7 @@ from app.services.cleanup_old_visits import cleanup_old_visits
 from app.services.directory_sync import full_sync
 from app.services.sync_service import SyncService
 from app.services.reader import RFIDReader
-from app.utils.config import RFID_PORT, TEST_MODE
+from app.utils.config import RFID_PORT
 from app.utils.logger import get_logger
 from app.services.beeper import Beeper
 
@@ -900,8 +900,7 @@ def main():
     text_widget, status_label, last_registered_label = build_ui(root, on_manual=open_manual, on_report=open_report)
     tklog = TkLogger(root, text_widget, max_lines=500)
 
-    tklog.write("🚀 Моноліт запущено.")
-    tklog.write("Готово. Очікую зчитування RFID…")
+    tklog.write("🚀 Застосунок працює. Очікую зчитування RFID…")
     update_last_registered()
 
     registration = RegistrationMonolith(
