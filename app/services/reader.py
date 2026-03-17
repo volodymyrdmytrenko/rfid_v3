@@ -2,9 +2,8 @@ import serial
 import threading
 import time
 
-from app.utils.config import RFID_PORT, DEBOUNCE_MS, TEST_MODE
+from app.utils.config import RFID_PORT, TEST_MODE
 from app.utils.logger import get_logger
-from app.utils.debounce import Debounce
 
 logger = get_logger("RFIDReader")
 
@@ -25,11 +24,6 @@ class RFIDReader:
       беремо перші 5 байт (10 HEX)
       little-endian
       -> decimal
-
-      55009FA3D0B9
-      55 00 9F A3 D0  (перші 5 байт)
-      little-endian
-      -> 896098304085
     """
 
     def __init__(self, port=RFID_PORT, baudrate=9600, callback=None):
@@ -37,7 +31,11 @@ class RFIDReader:
         self.baudrate = baudrate
         self.callback = callback
         self.running = False
-        self.debounce = Debounce(DEBOUNCE_MS)
+
+        # Останній успішно зчитаний UID.
+        # Повторно той самий UID не пропускаємо,
+        # доки не буде зчитаний інший.
+        self.last_accepted_uid = None
 
     # =======================
     # Публічні методи
@@ -68,7 +66,6 @@ class RFIDReader:
         while self.running:
             try:
                 with serial.Serial(self.port, self.baudrate, timeout=1) as ser:
-
                     in_frame = False
                     buffer = bytearray()
 
@@ -98,7 +95,18 @@ class RFIDReader:
                             if len(hex_uid) == 12:
                                 dec_uid = self._hex12_to_dec_str(hex_uid)
 
-                                if dec_uid and self.debounce.allowed():
+                                if dec_uid:
+                                    # Якщо це той самий брелок, що був останнім успішно прийнятим,
+                                    # то повторне зчитування ігноруємо
+                                    if dec_uid == self.last_accepted_uid:
+                                        logger.debug(
+                                            f"RFID duplicate ignored: HEX={hex_uid} DEC={dec_uid}"
+                                        )
+                                        continue
+
+                                    # Приймаємо тільки якщо це інший брелок
+                                    self.last_accepted_uid = dec_uid
+
                                     logger.info(
                                         f"RFID read HEX={hex_uid} DEC={dec_uid}"
                                     )
@@ -117,15 +125,34 @@ class RFIDReader:
     # =======================
 
     def _fake_loop(self):
+        test_tags = [
+            "55009FA3D0B9",  # A
+            "55009FA3D0B9",  # A -> ignore
+            "55009FA3D0B9",  # A -> ignore
+            "66009FA3D0B9",  # B -> accept
+            "55009FA3D0B9",  # A -> accept again
+        ]
+
+        i = 0
         while self.running:
             time.sleep(3)
 
-            fake_hex = "55009FA3D0B9"
+            fake_hex = test_tags[i % len(test_tags)]
+            i += 1
+
             fake_dec = self._hex12_to_dec_str(fake_hex)
+            if not fake_dec:
+                continue
+
+            if fake_dec == self.last_accepted_uid:
+                logger.debug(f"[TEST MODE] duplicate ignored: HEX={fake_hex} DEC={fake_dec}")
+                continue
+
+            self.last_accepted_uid = fake_dec
 
             logger.info(f"[TEST MODE] HEX={fake_hex} DEC={fake_dec}")
 
-            if self.callback and fake_dec:
+            if self.callback:
                 self.callback(fake_dec)
 
     # =======================
@@ -135,8 +162,6 @@ class RFIDReader:
     @staticmethod
     def _hex12_to_dec_str(hex12: str) -> str | None:
         """
-        Алгоритм старого застосунку:
-
         12 HEX -> беремо перші 5 байт (10 HEX)
         little-endian -> decimal
         """
@@ -146,10 +171,7 @@ class RFIDReader:
             if len(h) < 10:
                 return None
 
-            # перші 5 байт
             five_bytes = bytes.fromhex(h[:10])
-
-            # little-endian
             value = int.from_bytes(five_bytes, "little")
 
             return str(value)
