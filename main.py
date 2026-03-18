@@ -5,6 +5,7 @@ from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 
 import customtkinter as ctk
+from matplotlib import text
 
 from app.services.cleanup_old_visits import cleanup_old_visits
 from app.services.directory_sync import full_sync
@@ -618,7 +619,14 @@ def build_ui(root, on_manual, on_report):
     top = ctk.CTkFrame(container, corner_radius=12)
     top.pack(fill="x", padx=12, pady=(12, 8))
 
-    title = ctk.CTkLabel(top, text="KONSORT - їдальня", font=ctk.CTkFont(size=24, weight="bold"))
+    now = datetime.now().strftime("%d.%m.%Y")
+
+    title = ctk.CTkLabel(
+        top,
+        text=f"{now}",
+        font=ctk.CTkFont(size=24, weight="bold")
+    )
+
     title.pack(side="left", padx=16, pady=14)
 
     manual_btn = ctk.CTkButton(top, text="Ручна реєстрація", width=170, command=on_manual)
@@ -628,6 +636,10 @@ def build_ui(root, on_manual, on_report):
     last_frame = ctk.CTkFrame(container, corner_radius=12)
     last_frame.pack(fill="x", padx=12, pady=(0, 8))
 
+    last_frame.grid_columnconfigure(0, weight=1)
+    last_frame.grid_columnconfigure(1, weight=0)
+
+    # 👤 ЛІВА ЧАСТИНА — ім’я
     last_registered_label = ctk.CTkLabel(
         last_frame,
         text="—",
@@ -635,7 +647,16 @@ def build_ui(root, on_manual, on_report):
         anchor="center",
         justify="center",
     )
-    last_registered_label.pack(fill="x", padx=16, pady=16)
+    last_registered_label.grid(row=0, column=0, sticky="ew", padx=(16, 8), pady=16)
+
+    # 🔢 ПРАВА ЧАСТИНА — кількість
+    today_count_label = ctk.CTkLabel(
+        last_frame,
+        text="0",
+        font=ctk.CTkFont(size=28, weight="bold"),
+        text_color="#3B8ED0",
+    )
+    today_count_label.grid(row=0, column=1, sticky="e", padx=(8, 16), pady=16)
 
     body = ctk.CTkFrame(container, corner_radius=12)
     body.pack(fill="both", expand=True, padx=12, pady=(0, 8))
@@ -659,7 +680,7 @@ def build_ui(root, on_manual, on_report):
     report_btn.pack(side="right", padx=16, pady=14)
     bind_enter_to_button(report_btn, on_report)
 
-    return text, status, last_registered_label
+    return text, status, last_registered_label, today_count_label
 
 
 # ------------------ main ------------------
@@ -687,14 +708,11 @@ def main():
     def update_status():
         try:
             unsynced_count = db_get_unsynced_count()
-            today_count = db_get_today_visits_count()
-            # now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            now = datetime.now().strftime("%d-%m-%Y")
 
             status_label.configure(
                 text=(
-                    f"{now} | Статус: очікую RFID… | Port: {RFID_PORT} | "
-                    f"Сьогодні: {today_count} | Не синхронізовано: {unsynced_count}"
+                    f"Статус: очікую RFID… | Port: {RFID_PORT} | "
+                    f"Чекає синхронізації: {unsynced_count}"
                 )
             )
 
@@ -702,7 +720,7 @@ def main():
             logger.exception("update_status error")
             try:
                 status_label.configure(
-                    text=f"{now} | Статус: очікую RFID… | Port: {RFID_PORT} | Сьогодні: ? | Не синхронізовано: ?"
+                    text=f"Статус: очікую RFID… | Port: {RFID_PORT} | Чекає синхронізації: ?"
                 )
             except Exception:
                 pass
@@ -716,7 +734,7 @@ def main():
             if not row:
                 last_registered_label.configure(
                     text="Гарного робочого дня!",
-                    text_color=("gray10", "gray90")
+                    text_color=("#0f8f3d", "#4fe37a")
                 )
                 return
             
@@ -764,7 +782,7 @@ def main():
     def open_report():
         ReportWindow(root=root, tklog=tklog)
 
-    text_widget, status_label, last_registered_label = build_ui(root, on_manual=open_manual, on_report=open_report)
+    text_widget, status_label, last_registered_label, today_count_label = build_ui(root, on_manual=open_manual, on_report=open_report)
     tklog = TkLogger(root, text_widget, max_lines=500)
 
     tklog.write("🚀 Застосунок працює. Очікую зчитування RFID…")
