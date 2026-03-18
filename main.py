@@ -175,7 +175,6 @@ class ManualRegisterWindow:
         self.win.grab_set()
         self.win.deiconify()
         self.win.lift()
-        # self.place_offset_from_parent()
         self.win.focus_force()
 
         self.debounce_id = None
@@ -257,18 +256,6 @@ class ManualRegisterWindow:
         self.btn_register.bind("<KP_Enter>", lambda e: self.register_selected())
         self.btn_close.bind("<Return>", lambda e: self.win.destroy())
         self.btn_close.bind("<KP_Enter>", lambda e: self.win.destroy())
-
-    def place_offset_from_parent(self):
-        try:
-            self.root.update_idletasks()
-            self.win.update_idletasks()
-            parent_x = self.root.winfo_rootx()
-            parent_y = self.root.winfo_rooty()
-            x = max(parent_x + 20, 0)
-            y = max(parent_y + 20, 0)
-            self.win.geometry(f"+{x}+{y}")
-        except Exception:
-            self.win.geometry("+20+20")
 
     def on_input(self, _e=None):
         if self.debounce_id:
@@ -421,7 +408,6 @@ class ReportWindow:
         self.win.grab_set()
         self.win.deiconify()
         self.win.lift()
-        # self.place_offset_from_parent()
         self.win.focus_force()
 
         main = ctk.CTkFrame(self.win, corner_radius=12)
@@ -491,18 +477,6 @@ class ReportWindow:
         self.btn_close.bind("<KP_Enter>", lambda e: self.win.destroy())
 
         self.load_report()
-
-    def place_offset_from_parent(self):
-        try:
-            self.root.update_idletasks()
-            self.win.update_idletasks()
-            parent_x = self.root.winfo_rootx()
-            parent_y = self.root.winfo_rooty()
-            x = max(parent_x + 20, 0)
-            y = max(parent_y + 20, 0)
-            self.win.geometry(f"+{x}+{y}")
-        except Exception:
-            self.win.geometry("+20+20")
 
     def validate_date(self, value: str) -> bool:
         try:
