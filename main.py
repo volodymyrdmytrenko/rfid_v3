@@ -169,12 +169,12 @@ class ManualRegisterWindow:
         self.win.withdraw()
         set_app_icon(self.win, "favicon.ico")
         self.win.title("Ручна реєстрація")
-        self.win.geometry("560x560")
+        self.win.geometry("560x560+40+40")
         self.win.transient(root)
         self.win.grab_set()
         self.win.deiconify()
         self.win.lift()
-        self.place_offset_from_parent()
+        # self.place_offset_from_parent()
         self.win.focus_force()
 
         self.debounce_id = None
@@ -415,12 +415,12 @@ class ReportWindow:
         self.win.withdraw()
         set_app_icon(self.win, "favicon.ico")
         self.win.title("Звіт")
-        self.win.geometry("820x600")
+        self.win.geometry("820x600+40+40")
         self.win.transient(root)
         self.win.grab_set()
         self.win.deiconify()
         self.win.lift()
-        self.place_offset_from_parent()
+        # self.place_offset_from_parent()
         self.win.focus_force()
 
         main = ctk.CTkFrame(self.win, corner_radius=12)
@@ -607,8 +607,9 @@ class ReportWindow:
 # ------------------ UI ------------------
 
 def build_ui(root, on_manual, on_report):
-    root.title("RFID Canteen")
-    root.geometry("980x660")
+    root.title("KONSORT - їдальня")
+    root.geometry("1300x700+0+0")
+    # root.attributes("-fullscreen", True)
     root.minsize(860, 560)
 
     container = ctk.CTkFrame(root, corner_radius=0)
@@ -639,7 +640,7 @@ def build_ui(root, on_manual, on_report):
     body = ctk.CTkFrame(container, corner_radius=12)
     body.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
-    text = ctk.CTkTextbox(body, wrap="word", font=("Consolas", 13), corner_radius=10)
+    text = ctk.CTkTextbox(body, wrap="word", font=("Consolas", 22), corner_radius=10)
     text.pack(fill="both", expand=True, padx=14, pady=14)
     text.configure(state="disabled")
 
@@ -687,18 +688,21 @@ def main():
         try:
             unsynced_count = db_get_unsynced_count()
             today_count = db_get_today_visits_count()
+            # now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now = datetime.now().strftime("%d-%m-%Y")
 
             status_label.configure(
                 text=(
-                    f"Статус: очікую RFID… | Port: {RFID_PORT} | "
+                    f"{now} | Статус: очікую RFID… | Port: {RFID_PORT} | "
                     f"Сьогодні: {today_count} | Не синхронізовано: {unsynced_count}"
                 )
             )
+
         except Exception:
             logger.exception("update_status error")
             try:
                 status_label.configure(
-                    text=f"Статус: очікую RFID… | Port: {RFID_PORT} | Сьогодні: ? | Не синхронізовано: ?"
+                    text=f"{now} | Статус: очікую RFID… | Port: {RFID_PORT} | Сьогодні: ? | Не синхронізовано: ?"
                 )
             except Exception:
                 pass
@@ -710,9 +714,12 @@ def main():
         try:
             row = db_get_last_registered()
             if not row:
-                last_registered_label.configure(text="—", text_color=("gray10", "gray90"))
+                last_registered_label.configure(
+                    text="Гарного робочого дня!",
+                    text_color=("gray10", "gray90")
+                )
                 return
-
+            
             full_name = (row.get("full_name") or "").strip()
             normal_color = ("gray10", "gray90")
             flash_color = ("#0f8f3d", "#4fe37a")
