@@ -702,16 +702,18 @@ def main():
     last_flash_job = None
 
     def update_last_registered(flash: bool = False):
-        nonlocal last_flash_job
         try:
-            row = db_get_last_registered()
-            if not row:
+            today = datetime.now().strftime("%Y-%m-%d")
+            rows = db_get_visits_for_date(today)
+
+            if not rows:
                 last_registered_label.configure(
                     text="Гарного робочого дня!",
                     text_color=("#0f8f3d", "#4fe37a")
                 )
                 return
-            
+
+            row = rows[-1]   # або окрема функція db_get_last_registered_for_date(today)
             full_name = (row.get("full_name") or "").strip()
             normal_color = ("gray10", "gray90")
             flash_color = ("#0f8f3d", "#4fe37a")
