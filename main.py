@@ -61,26 +61,36 @@ def setup_ttk_theme(root):
     muted = "#b8b8b8"
     accent = "#3B8ED0"
 
-    style.configure("Dark.Treeview",
-                    background=surface,
-                    foreground=fg,
-                    fieldbackground=surface,
-                    bordercolor=surface,
-                    borderwidth=0,
-                    rowheight=28)
-    style.map("Dark.Treeview",
-              background=[("selected", accent)],
-              foreground=[("selected", "#ffffff")])
-    style.configure("Dark.Treeview.Heading",
-                    background=bg,
-                    foreground=fg,
-                    relief="flat")
-    style.map("Dark.Treeview.Heading",
-              background=[("active", "#343638")])
-    style.configure("Vertical.TScrollbar",
-                    background=surface,
-                    troughcolor=bg,
-                    arrowcolor=fg)
+    style.configure(
+        "Dark.Treeview",
+        background=surface,
+        foreground=fg,
+        fieldbackground=surface,
+        bordercolor=surface,
+        borderwidth=0,
+        rowheight=28
+    )
+    style.map(
+        "Dark.Treeview",
+        background=[("selected", accent)],
+        foreground=[("selected", "#ffffff")]
+    )
+    style.configure(
+        "Dark.Treeview.Heading",
+        background=bg,
+        foreground=fg,
+        relief="flat"
+    )
+    style.map(
+        "Dark.Treeview.Heading",
+        background=[("active", "#343638")]
+    )
+    style.configure(
+        "Vertical.TScrollbar",
+        background=surface,
+        troughcolor=bg,
+        arrowcolor=fg
+    )
 
 
 # ------------------ Tk logger with line limit ------------------
@@ -189,8 +199,16 @@ class ManualRegisterWindow:
         header = ctk.CTkFrame(main, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
 
-        ctk.CTkLabel(header, text="Пошук співробітника", font=ctk.CTkFont(size=20, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(header, text="Введіть мінімум 2 символи", text_color="#9aa0a6").pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(
+            header,
+            text="Пошук співробітника",
+            font=ctk.CTkFont(size=20, weight="bold")
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            header,
+            text="Введіть мінімум 2 символи",
+            text_color="#9aa0a6"
+        ).pack(anchor="w", pady=(4, 0))
 
         entry_wrap = ctk.CTkFrame(main, fg_color="transparent")
         entry_wrap.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
@@ -234,10 +252,23 @@ class ManualRegisterWindow:
         actions = ctk.CTkFrame(footer, fg_color="transparent")
         actions.grid(row=1, column=0, sticky="e")
 
-        self.btn_register = ctk.CTkButton(actions, text="Реєстрація", width=130, command=self.register_selected, state="disabled")
+        self.btn_register = ctk.CTkButton(
+            actions,
+            text="Реєстрація",
+            width=130,
+            command=self.register_selected,
+            state="disabled"
+        )
         self.btn_register.grid(row=0, column=0, padx=(0, 8))
 
-        self.btn_close = ctk.CTkButton(actions, text="Закрити", width=110, fg_color="#444", hover_color="#555", command=self.win.destroy)
+        self.btn_close = ctk.CTkButton(
+            actions,
+            text="Закрити",
+            width=110,
+            fg_color="#444",
+            hover_color="#555",
+            command=self.win.destroy
+        )
         self.btn_close.grid(row=0, column=1)
 
         self.win.bind("<Escape>", lambda e: self.win.destroy())
@@ -416,8 +447,16 @@ class ReportWindow:
         header = ctk.CTkFrame(main, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(16, 10))
 
-        ctk.CTkLabel(header, text="Звіт за дату", font=ctk.CTkFont(size=20, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(header, text="Формат дати: YYYY-MM-DD", text_color="#9aa0a6").pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(
+            header,
+            text="Звіт за дату",
+            font=ctk.CTkFont(size=20, weight="bold")
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            header,
+            text="Формат дати: YYYY-MM-DD",
+            text_color="#9aa0a6"
+        ).pack(anchor="w", pady=(4, 0))
 
         filters = ctk.CTkFrame(main, fg_color="transparent")
         filters.pack(fill="x", padx=16, pady=(0, 10))
@@ -452,7 +491,14 @@ class ReportWindow:
         actions = ctk.CTkFrame(main, fg_color="transparent")
         actions.pack(fill="x", padx=16, pady=(0, 16))
 
-        self.btn_close = ctk.CTkButton(actions, text="Закрити", width=110, fg_color="#444", hover_color="#555", command=self.win.destroy)
+        self.btn_close = ctk.CTkButton(
+            actions,
+            text="Закрити",
+            width=110,
+            fg_color="#444",
+            hover_color="#555",
+            command=self.win.destroy
+        )
         self.btn_close.pack(side="right")
 
         self.btn_save = ctk.CTkButton(actions, text="Зберегти", width=110, command=self.save_report)
@@ -600,7 +646,6 @@ def build_ui(root, on_manual, on_report):
         text=f"{now}",
         font=ctk.CTkFont(size=24, weight="bold")
     )
-
     title.pack(side="left", padx=16, pady=14)
 
     manual_btn = ctk.CTkButton(top, text="Ручна реєстрація", width=170, command=on_manual)
@@ -613,7 +658,6 @@ def build_ui(root, on_manual, on_report):
     last_frame.grid_columnconfigure(0, weight=1)
     last_frame.grid_columnconfigure(1, weight=0)
 
-    # 👤 ЛІВА ЧАСТИНА — ім’я
     last_registered_label = ctk.CTkLabel(
         last_frame,
         text="—",
@@ -623,7 +667,6 @@ def build_ui(root, on_manual, on_report):
     )
     last_registered_label.grid(row=0, column=0, sticky="ew", padx=(16, 8), pady=16)
 
-    # 🔢 ПРАВА ЧАСТИНА — кількість
     today_count_label = ctk.CTkLabel(
         last_frame,
         text="0",
@@ -644,7 +687,7 @@ def build_ui(root, on_manual, on_report):
 
     status = ctk.CTkLabel(
         bottom,
-        text=f"Статус: очікую RFID… | Port: {RFID_PORT} | Сьогодні: 0 | Не синхронізовано: 0",
+        text=f"Статус: очікую RFID… | Port: {RFID_PORT} | Чекає синхронізації: 0",
         anchor="w",
         justify="left",
     )
@@ -678,10 +721,14 @@ def main():
     tklog = None
     status_label = None
     last_registered_label = None
+    today_count_label = None
 
     def update_status():
         try:
             unsynced_count = db_get_unsynced_count()
+            today = datetime.now().strftime("%Y-%m-%d")
+            today_rows = db_get_visits_for_date(today)
+            today_count = len(today_rows)
 
             status_label.configure(
                 text=(
@@ -690,18 +737,23 @@ def main():
                 )
             )
 
+            today_count_label.configure(text=str(today_count))
+
         except Exception:
             logger.exception("update_status error")
             try:
                 status_label.configure(
                     text=f"Статус: очікую RFID… | Port: {RFID_PORT} | Чекає синхронізації: ?"
                 )
+                today_count_label.configure(text="?")
             except Exception:
                 pass
 
     last_flash_job = None
 
     def update_last_registered(flash: bool = False):
+        nonlocal last_flash_job
+
         try:
             today = datetime.now().strftime("%Y-%m-%d")
             rows = db_get_visits_for_date(today)
@@ -713,11 +765,14 @@ def main():
                 )
                 return
 
-            row = rows[-1]   # або окрема функція db_get_last_registered_for_date(today)
+            row = rows[-1]
             full_name = (row.get("full_name") or "").strip()
             normal_color = ("gray10", "gray90")
             flash_color = ("#0f8f3d", "#4fe37a")
-            last_registered_label.configure(text=full_name.upper() if full_name else "—")
+
+            last_registered_label.configure(
+                text=full_name.upper() if full_name else "—"
+            )
 
             if last_flash_job is not None:
                 try:
@@ -739,6 +794,7 @@ def main():
                 last_flash_job = root.after(1500, reset_last_label_color)
             else:
                 last_registered_label.configure(text_color=normal_color)
+
         except Exception:
             logger.exception("update_last_registered error")
             try:
@@ -758,11 +814,16 @@ def main():
     def open_report():
         ReportWindow(root=root, tklog=tklog)
 
-    text_widget, status_label, last_registered_label, today_count_label = build_ui(root, on_manual=open_manual, on_report=open_report)
+    text_widget, status_label, last_registered_label, today_count_label = build_ui(
+        root,
+        on_manual=open_manual,
+        on_report=open_report
+    )
     tklog = TkLogger(root, text_widget, max_lines=500)
 
     tklog.write("🚀 Застосунок працює. Очікую зчитування RFID…")
     update_last_registered()
+    update_status()
 
     registration = RegistrationClass(
         tklog=tklog,
