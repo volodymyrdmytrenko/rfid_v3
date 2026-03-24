@@ -669,7 +669,7 @@ def build_ui(root, on_manual, on_report):
 
     today_count_label = ctk.CTkLabel(
         last_frame,
-        text="0",
+        text="Сьогодні: 0",
         font=ctk.CTkFont(size=28, weight="bold"),
         text_color="#3B8ED0",
     )
@@ -737,7 +737,7 @@ def main():
                 )
             )
 
-            today_count_label.configure(text=str(today_count))
+            today_count_label.configure(text=f"Сьогодні: {today_count}")
 
         except Exception:
             logger.exception("update_status error")
