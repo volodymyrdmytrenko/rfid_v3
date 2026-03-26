@@ -44,7 +44,7 @@ def sync_employees():
         scur = sqlite_conn.cursor()
 
         mcur.execute("""
-            SELECT id, rfid, full_name, active, updated_at
+            SELECT id, rfid, full_name, fmoney,active, updated_at
             FROM employees
         """)
         rows = mcur.fetchall()
@@ -66,6 +66,7 @@ def sync_employees():
                 rfid,
                 full_name,
                 normalize_name(full_name),
+                int(row.get("fmoney", 50) or 50),
                 int(row.get("active", 1) or 0),
                 str(row.get("updated_at") or datetime.now().isoformat())
             ))
@@ -74,9 +75,9 @@ def sync_employees():
 
         scur.executemany("""
             INSERT INTO employees (
-                id, rfid, full_name, full_name_norm, active, updated_at
+                id, rfid, full_name, full_name_norm, fmoney, active, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, prepared_rows)
 
         sqlite_conn.commit()
