@@ -145,10 +145,10 @@ class RegistrationClass:
 
             full_name = (emp.get("full_name") or "").strip()
             emp_id = int(emp["id"])
-
+            money = int(emp.get("fmoney", 50) or 50)
             status, err = db_register_visit(emp_id, source="rfid")
             if status == "ok":
-                self.tklog.write(f"✅ Відмічено — {full_name}")
+                self.tklog.write(f"✅ Відмічено — {full_name} — {money}")
                 self.beeper.beep_ok()
                 self.update_status()
                 self.update_last_registered(flash=True)
@@ -399,6 +399,7 @@ class ManualRegisterWindow:
             for r in self.results:
                 if int(r["id"]) == int(self.selected_id):
                     name = (r.get("full_name") or "").strip()
+                    money = int(r.get("fmoney", 50) or 50)
                     break
         except Exception:
             pass
@@ -406,7 +407,7 @@ class ManualRegisterWindow:
         status, err = db_register_visit(self.selected_id, source="manual")
 
         if status == "ok":
-            self.tklog.write(f"✅ Ручна реєстрація — {name}")
+            self.tklog.write(f"✅ Ручна реєстрація — {name} — {money}")
             self.beeper.beep_ok()
             self.update_status()
             self.update_last_registered(flash=True)
