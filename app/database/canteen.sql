@@ -32,7 +32,7 @@ CREATE TABLE `employees` (
   `full_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
   `active` tinyint(1) NOT NULL DEFAULT 1,
   `updated_at` datetime DEFAULT NULL,
-  `money` smallint NOT NULL DEFAULT 50,
+  `fmoney` smallint NOT NULL DEFAULT 50,
   PRIMARY KEY (`id`),
   KEY `ix_rfid` (`rfid`),
   KEY `ix_active` (`active`)

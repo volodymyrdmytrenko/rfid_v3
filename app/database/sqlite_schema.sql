@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS employees (
     rfid TEXT UNIQUE,
     full_name TEXT,
     full_name_norm TEXT,
+	fmoney INTEGER DEFAULT 50,
     active INTEGER DEFAULT 1,
     updated_at TEXT
 );

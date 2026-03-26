@@ -28,7 +28,7 @@ CREATE TABLE `employees` (
   `full_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
   `active` tinyint(1) DEFAULT '1',
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `money` smallint NOT NULL DEFAULT '50',
+  `fmoney` smallint NOT NULL DEFAULT '50',
   PRIMARY KEY (`id`),
   UNIQUE KEY `rfid` (`rfid`),
   KEY `idx_full_name` (`full_name`)
