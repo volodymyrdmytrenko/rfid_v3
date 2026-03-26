@@ -70,7 +70,7 @@ def db_get_visits_for_date(report_date: str):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT v.visit_time, e.full_name
+        SELECT v.visit_time, e.full_name, e.fmoney
         FROM visits v
         JOIN employees e ON e.id = v.employee_id
         WHERE date(v.visit_time) = date(?)

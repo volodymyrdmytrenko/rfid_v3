@@ -478,11 +478,13 @@ class ReportWindow:
         table_wrap = ctk.CTkFrame(main)
         table_wrap.pack(fill="both", expand=True, padx=16, pady=(0, 8))
 
-        self.tree = ttk.Treeview(table_wrap, columns=("dt", "name"), show="headings", style="Dark.Treeview")
+        self.tree = ttk.Treeview(table_wrap, columns=("dt", "name", "fmoney"), show="headings", style="Dark.Treeview")
         self.tree.heading("dt", text="Дата-час")
         self.tree.heading("name", text="ПІБ")
-        self.tree.column("dt", width=180, anchor="w")
-        self.tree.column("name", width=560, anchor="w")
+        self.tree.heading("fmoney", text="Гроші")
+        self.tree.column("dt", width=80, anchor="w")
+        self.tree.column("name", width=460, anchor="w")
+        self.tree.column("fmoney", width=50, anchor="center")    
         self.tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
 
         ysb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
@@ -577,7 +579,7 @@ class ReportWindow:
             self.clear_table()
 
             for row in self.rows:
-                self.tree.insert("", "end", values=(row["visit_time"], row["full_name"]))
+                self.tree.insert("", "end", values=(row["visit_time"], row["full_name"], row["fmoney"]))
 
             if self.tree.get_children():
                 first = self.tree.get_children()[0]
