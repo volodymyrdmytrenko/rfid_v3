@@ -129,12 +129,21 @@ def fetch_from_mssql() -> list[dict[str, Any]]:
                 logger.exception("Failed to close MSSQL connection")
 
 
-def deduplicate_employees(raw_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    logger.info("Starting employee deduplication. Input rows: %s", len(raw_data))
+def _sort_key(row: dict[str, Any]):
+    return (
+        row["updated_at"] is not None,
+        row["updated_at"] or datetime.min,
+        row["rfid"] or "",
+        row["id"],
+    )
+
+
+def deduplicate_by_id(raw_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    logger.info("Starting deduplication by employee id. Input rows: %s", len(raw_data))
 
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in raw_data:
-        grouped[row["id"]].append(row)
+        grouped[int(row["id"])].append(row)
 
     result: list[dict[str, Any]] = []
     duplicates_count = 0
@@ -142,23 +151,143 @@ def deduplicate_employees(raw_data: list[dict[str, Any]]) -> list[dict[str, Any]
     for emp_id, rows in grouped.items():
         if len(rows) > 1:
             duplicates_count += len(rows) - 1
-            logger.debug("Employee id=%s has %s duplicate rows.", emp_id, len(rows) - 1)
+            logger.warning(
+                "Duplicate rows by employee id=%s detected: %s. Keeping the newest row.",
+                emp_id,
+                len(rows),
+            )
 
-        rows_sorted = sorted(
-            rows,
-            key=lambda x: (
-                x["updated_at"] is not None,
-                x["updated_at"] or datetime.min,
-                x["rfid"] or "",
-            ),
-            reverse=True,
-        )
+        rows_sorted = sorted(rows, key=_sort_key, reverse=True)
         result.append(rows_sorted[0])
 
     logger.info(
-        "Deduplication finished. Output rows: %s. Removed duplicates: %s",
+        "Deduplication by id finished. Output rows: %s. Removed duplicates: %s",
         len(result),
         duplicates_count,
+    )
+    return result
+
+
+def deduplicate_by_rfid(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    logger.info("Starting deduplication by RFID. Input rows: %s", len(data))
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in data:
+        rfid = (row.get("rfid") or "").strip()
+        if not rfid:
+            continue
+        grouped[rfid].append(row)
+
+    result: list[dict[str, Any]] = []
+    duplicates_count = 0
+
+    for rfid, rows in grouped.items():
+        if len(rows) > 1:
+            duplicates_count += len(rows) - 1
+
+            rows_sorted = sorted(rows, key=_sort_key, reverse=True)
+            winner = rows_sorted[0]
+
+            logger.warning(
+                "RFID conflict detected for rfid=%s. Employees=%s. Keeping employee id=%s (%s).",
+                rfid,
+                [int(x["id"]) for x in rows_sorted],
+                int(winner["id"]),
+                winner["full_name"],
+            )
+
+            result.append(winner)
+        else:
+            result.append(rows[0])
+
+    logger.info(
+        "Deduplication by RFID finished. Output rows: %s. Removed duplicates: %s",
+        len(result),
+        duplicates_count,
+    )
+    return result
+
+
+def deduplicate_employees(raw_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    step1 = deduplicate_by_id(raw_data)
+    step2 = deduplicate_by_rfid(step1)
+    logger.info(
+        "Final deduplication completed. raw=%s after_id=%s after_rfid=%s",
+        len(raw_data),
+        len(step1),
+        len(step2),
+    )
+    return step2
+
+
+def preload_mysql_rfid_map() -> dict[str, int]:
+    logger.info("Loading existing RFID map from MySQL...")
+
+    conn = None
+    try:
+        conn = get_mysql_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT id, rfid
+            FROM employees
+            WHERE rfid IS NOT NULL AND rfid <> ''
+            """
+        )
+        rows = cur.fetchall()
+
+        mapping: dict[str, int] = {}
+        for row in rows:
+            rfid = str(row["rfid"]).strip()
+            if rfid:
+                mapping[rfid] = int(row["id"])
+
+        logger.info("Loaded %s existing RFID values from MySQL.", len(mapping))
+        return mapping
+
+    except Exception:
+        logger.exception("Failed to preload MySQL RFID map")
+        raise
+
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                logger.exception("Failed to close MySQL connection after RFID preload")
+
+
+def filter_conflicts_against_mysql(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    logger.info("Checking incoming rows against existing MySQL RFID conflicts...")
+
+    mysql_rfid_map = preload_mysql_rfid_map()
+    result: list[dict[str, Any]] = []
+    skipped = 0
+
+    for row in data:
+        rfid = (row.get("rfid") or "").strip()
+        emp_id = int(row["id"])
+
+        existing_id = mysql_rfid_map.get(rfid)
+
+        if existing_id is not None and existing_id != emp_id:
+            skipped += 1
+            logger.error(
+                "Skipping employee id=%s (%s) because RFID=%s already belongs to employee id=%s in MySQL.",
+                emp_id,
+                row.get("full_name"),
+                rfid,
+                existing_id,
+            )
+            continue
+
+        result.append(row)
+
+    logger.info(
+        "MySQL RFID conflict filtering completed. Input=%s output=%s skipped=%s",
+        len(data),
+        len(result),
+        skipped,
     )
     return result
 
@@ -197,7 +326,18 @@ def sync_to_mysql(data: list[dict[str, Any]]) -> int:
                 for row in data
             ]
 
-            cur.executemany(upsert_sql, payload)
+            for item in payload:
+                try:
+                    cur.execute(upsert_sql, item)
+                except Exception:
+                    logger.exception(
+                        "Failed to UPSERT employee. id=%s rfid=%s full_name=%s",
+                        item[0],
+                        item[1],
+                        item[2],
+                    )
+                    raise
+
             logger.info("MySQL UPSERT done for %s employees.", len(payload))
 
             ids = sorted({int(row["id"]) for row in data})
@@ -245,12 +385,14 @@ def stopnet_sync() -> int:
 
     raw_data = fetch_from_mssql()
     prepared_data = deduplicate_employees(raw_data)
-    synced_count = sync_to_mysql(prepared_data)
+    filtered_data = filter_conflicts_against_mysql(prepared_data)
+    synced_count = sync_to_mysql(filtered_data)
 
     logger.info(
-        "StopNet sync finished successfully. raw=%s prepared=%s synced=%s",
+        "StopNet sync finished successfully. raw=%s prepared=%s filtered=%s synced=%s",
         len(raw_data),
         len(prepared_data),
+        len(filtered_data),
         synced_count,
     )
     return synced_count
