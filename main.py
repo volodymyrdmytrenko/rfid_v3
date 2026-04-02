@@ -1,27 +1,36 @@
 import os
 import sys
+import queue
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 
 import customtkinter as ctk
-from matplotlib import text
 
-from app.services.cleanup_old_visits import cleanup_old_visits
-from app.services.directory_sync import full_sync
-from app.services.sync_service import SyncService
-from app.services.reader import RFIDReader
-from app.utils.config import RFID_PORT
-from app.utils.logger import get_logger
-from app.services.beeper import Beeper
-from app.services.db_helpers import *
 from app.database.sqlite_db import init_sqlite
+from app.services.beeper import Beeper
+from app.services.cleanup_old_visits import cleanup_old_visits
+from app.services.db_helpers import (
+    db_get_last_registered,
+    db_get_today_visits_count,
+    db_get_unsynced_count,
+    db_get_visits_for_date,
+    db_search_employees,
+)
+from app.services.directory_sync import full_sync
+from app.services.reader import RFIDReader
+from app.services.registration import RegistrationService
+from app.services.sync_service import SyncService
+from app.utils.config import ENABLE_STOPNET_SYNC, RFID_PORT, validate_config
+from app.utils.logger import get_logger
 from app.utils.stopnet_sync import stopnet_sync
 
 logger = get_logger("MonolithCustomTK")
 
 
 # ------------------ resource/icon helpers ------------------
+
 
 def resource_path(relative_path: str) -> str:
     if getattr(sys, "frozen", False):
@@ -49,6 +58,7 @@ def bind_enter_to_button(btn, command):
 
 # ------------------ ttk styling inside CustomTkinter ------------------
 
+
 def setup_ttk_theme(root):
     style = ttk.Style(root)
     try:
@@ -59,7 +69,6 @@ def setup_ttk_theme(root):
     bg = "#1f1f1f"
     surface = "#2b2b2b"
     fg = "#f5f5f5"
-    muted = "#b8b8b8"
     accent = "#3B8ED0"
 
     style.configure(
@@ -69,32 +78,33 @@ def setup_ttk_theme(root):
         fieldbackground=surface,
         bordercolor=surface,
         borderwidth=0,
-        rowheight=28
+        rowheight=28,
     )
     style.map(
         "Dark.Treeview",
         background=[("selected", accent)],
-        foreground=[("selected", "#ffffff")]
+        foreground=[("selected", "#ffffff")],
     )
     style.configure(
         "Dark.Treeview.Heading",
         background=bg,
         foreground=fg,
-        relief="flat"
+        relief="flat",
     )
     style.map(
         "Dark.Treeview.Heading",
-        background=[("active", "#343638")]
+        background=[("active", "#343638")],
     )
     style.configure(
         "Vertical.TScrollbar",
         background=surface,
         troughcolor=bg,
-        arrowcolor=fg
+        arrowcolor=fg,
     )
 
 
 # ------------------ Tk logger with line limit ------------------
+
 
 class TkLogger:
     def __init__(self, root, text: ctk.CTkTextbox, max_lines: int = 500):
@@ -127,55 +137,25 @@ class TkLogger:
         self.text.configure(state="disabled")
 
 
-# ------------------ Registration logic ------------------
-
-class RegistrationClass:
-    def __init__(self, tklog: TkLogger, beeper, update_status, update_last_registered):
-        self.tklog = tklog
-        self.beeper = beeper
-        self.update_status = update_status
-        self.update_last_registered = update_last_registered
-
-    def process_rfid(self, rfid: str):
-        try:
-            emp = db_find_employee_by_rfid(rfid)
-            if not emp:
-                self.tklog.write("❌ Невідомий брелок")
-                self.beeper.beep_unknown()
-                return
-
-            full_name = (emp.get("full_name") or "").strip()
-            emp_id = int(emp["id"])
-            money = int(emp.get("fmoney", 50) or 50)
-            status, err = db_register_visit(emp_id, source="rfid")
-            if status == "ok":
-                self.tklog.write(f"✅ Відмічено — {full_name} — {money}")
-                self.beeper.beep_ok()
-                self.update_status()
-                self.update_last_registered(flash=True)
-            elif status == "duplicate":
-                self.tklog.write(f"⚠️ Вже був сьогодні — {full_name} - не реєструємо")
-                self.beeper.beep_repeated()
-                self.update_status()
-            else:
-                self.tklog.write(f"🔥 Помилка реєстрації — {full_name}: {err}")
-                self.beeper.beep_error()
-
-        except Exception as e:
-            logger.exception("process_rfid error")
-            self.tklog.write(f"🔥 Помилка: {e}")
-            self.beeper.beep_error()
-
-
 # ------------------ Manual registration window ------------------
 
+
 class ManualRegisterWindow:
-    def __init__(self, root, tklog: TkLogger, beeper, update_status, update_last_registered):
+    def __init__(
+        self,
+        root,
+        tklog: TkLogger,
+        beeper,
+        update_status,
+        update_last_registered,
+        registration_service: RegistrationService,
+    ):
         self.root = root
         self.tklog = tklog
         self.beeper = beeper
         self.update_status = update_status
         self.update_last_registered = update_last_registered
+        self.registration_service = registration_service
 
         self.win = ctk.CTkToplevel(root)
         self.win.withdraw()
@@ -203,12 +183,12 @@ class ManualRegisterWindow:
         ctk.CTkLabel(
             header,
             text="Пошук співробітника",
-            font=ctk.CTkFont(size=20, weight="bold")
+            font=ctk.CTkFont(size=20, weight="bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
             header,
             text="Введіть мінімум 2 символи",
-            text_color="#9aa0a6"
+            text_color="#9aa0a6",
         ).pack(anchor="w", pady=(4, 0))
 
         entry_wrap = ctk.CTkFrame(main, fg_color="transparent")
@@ -258,7 +238,7 @@ class ManualRegisterWindow:
             text="Реєстрація",
             width=130,
             command=self.register_selected,
-            state="disabled"
+            state="disabled",
         )
         self.btn_register.grid(row=0, column=0, padx=(0, 8))
 
@@ -268,7 +248,7 @@ class ManualRegisterWindow:
             width=110,
             fg_color="#444",
             hover_color="#555",
-            command=self.win.destroy
+            command=self.win.destroy,
         )
         self.btn_close.grid(row=0, column=1)
 
@@ -327,6 +307,7 @@ class ManualRegisterWindow:
                 self.btn_register.configure(state="normal")
 
         except Exception as e:
+            logger.exception("run_search error")
             self.msg.configure(text=f"Помилка пошуку: {e}")
 
     def on_entry_down(self, _e=None):
@@ -392,37 +373,34 @@ class ManualRegisterWindow:
         return "break"
 
     def register_selected(self):
-        if not self.selected_id:
+        if self.selected_id is None:
+            self.msg.configure(text="Оберіть співробітника зі списку")
             return
 
-        name = ""
-        try:
-            for r in self.results:
-                if int(r["id"]) == int(self.selected_id):
-                    name = (r.get("full_name") or "").strip()
-                    money = int(r.get("fmoney", 50) or 50)
-                    break
-        except Exception:
-            pass
+        result = self.registration_service.register_manual(int(self.selected_id))
 
-        status, err = db_register_visit(self.selected_id, source="manual")
-
-        if status == "ok":
-            self.tklog.write(f"✅ Ручна реєстрація — {name} — {money}")
+        if result.status == "ok":
+            self.tklog.write(f"✅ {result.message} — {result.fmoney}")
             self.beeper.beep_ok()
             self.update_status()
             self.update_last_registered(flash=True)
             self.win.destroy()
-        elif status == "duplicate":
-            self.msg.configure(text="⚠️ Вже був сьогодні. Не реєструємо.")
+            return
+
+        if result.status == "duplicate":
+            self.tklog.write(f"⚠️ {result.message} — не реєструємо")
             self.beeper.beep_repeated()
             self.update_status()
-        else:
-            self.msg.configure(text=f"🔥 Помилка: {err}")
-            self.beeper.beep_error()
+            self.msg.configure(text=result.message)
+            return
+
+        self.tklog.write(f"🔥 {result.message}")
+        self.beeper.beep_error()
+        self.msg.configure(text=result.message)
 
 
 # ------------------ Report window ------------------
+
 
 class ReportWindow:
     def __init__(self, root, tklog: TkLogger):
@@ -452,12 +430,12 @@ class ReportWindow:
         ctk.CTkLabel(
             header,
             text="Звіт за дату",
-            font=ctk.CTkFont(size=20, weight="bold")
+            font=ctk.CTkFont(size=20, weight="bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
             header,
             text="Формат дати: YYYY-MM-DD",
-            text_color="#9aa0a6"
+            text_color="#9aa0a6",
         ).pack(anchor="w", pady=(4, 0))
 
         filters = ctk.CTkFrame(main, fg_color="transparent")
@@ -479,13 +457,18 @@ class ReportWindow:
         table_wrap = ctk.CTkFrame(main)
         table_wrap.pack(fill="both", expand=True, padx=16, pady=(0, 8))
 
-        self.tree = ttk.Treeview(table_wrap, columns=("dt", "name", "fmoney"), show="headings", style="Dark.Treeview")
+        self.tree = ttk.Treeview(
+            table_wrap,
+            columns=("dt", "name", "fmoney"),
+            show="headings",
+            style="Dark.Treeview",
+        )
         self.tree.heading("dt", text="Дата-час")
         self.tree.heading("name", text="ПІБ")
         self.tree.heading("fmoney", text="Гроші")
-        self.tree.column("dt", width=80, anchor="w")
+        self.tree.column("dt", width=180, anchor="w")
         self.tree.column("name", width=460, anchor="w")
-        self.tree.column("fmoney", width=50, anchor="center")    
+        self.tree.column("fmoney", width=100, anchor="center")
         self.tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
 
         ysb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
@@ -501,7 +484,7 @@ class ReportWindow:
             width=110,
             fg_color="#444",
             hover_color="#555",
-            command=self.win.destroy
+            command=self.win.destroy,
         )
         self.btn_close.pack(side="right")
 
@@ -580,7 +563,11 @@ class ReportWindow:
             self.clear_table()
 
             for row in self.rows:
-                self.tree.insert("", "end", values=(row["visit_time"], row["full_name"], row["fmoney"]))
+                self.tree.insert(
+                    "",
+                    "end",
+                    values=(row["visit_time"], row["full_name"], row["fmoney"]),
+                )
 
             if self.tree.get_children():
                 first = self.tree.get_children()[0]
@@ -620,7 +607,7 @@ class ReportWindow:
                 f.write(title_line + "\n")
                 f.write("=" * len(title_line) + "\n\n")
                 for row in self.rows:
-                    f.write(f"{row['visit_time']} | {row['full_name']}\n")
+                    f.write(f"{row['visit_time']} | {row['full_name']} | {row['fmoney']}\n")
 
             self.tklog.write(f"💾 Звіт збережено: {path}")
             messagebox.showinfo("Звіт", "Файл успішно збережено")
@@ -631,10 +618,10 @@ class ReportWindow:
 
 # ------------------ UI ------------------
 
+
 def build_ui(root, on_manual, on_report):
     root.title("KONSORT - їдальня")
     root.geometry("1300x700+0+0")
-    # root.attributes("-fullscreen", True)
     root.minsize(860, 560)
 
     container = ctk.CTkFrame(root, corner_radius=0)
@@ -648,7 +635,7 @@ def build_ui(root, on_manual, on_report):
     title = ctk.CTkLabel(
         top,
         text=f"{now}",
-        font=ctk.CTkFont(size=24, weight="bold")
+        font=ctk.CTkFont(size=24, weight="bold"),
     )
     title.pack(side="left", padx=16, pady=14)
 
@@ -706,10 +693,11 @@ def build_ui(root, on_manual, on_report):
 
 # ------------------ main ------------------
 
+
 def main():
-    stopnet_sync()
+    validate_config()
+
     init_sqlite()
-    full_sync()
     cleanup_old_visits()
 
     ctk.set_appearance_mode("dark")
@@ -721,19 +709,34 @@ def main():
 
     beeper = Beeper()
     sync = SyncService()
-    sync.start()
+    registration_service = RegistrationService()
+    rfid_queue: queue.Queue[str] = queue.Queue(maxsize=100)
 
     tklog = None
     status_label = None
     last_registered_label = None
     today_count_label = None
+    last_flash_job = None
+
+    def startup_sync_job():
+        try:
+            if ENABLE_STOPNET_SYNC:
+                stopnet_sync()
+        except Exception:
+            logger.exception("Initial StopNet sync failed")
+
+        try:
+            full_sync()
+        except Exception:
+            logger.exception("Initial directory sync failed")
+
+    threading.Thread(target=startup_sync_job, name="startup-sync", daemon=True).start()
+    sync.start()
 
     def update_status():
         try:
             unsynced_count = db_get_unsynced_count()
-            today = datetime.now().strftime("%Y-%m-%d")
-            today_rows = db_get_visits_for_date(today)
-            today_count = len(today_rows)
+            today_count = db_get_today_visits_count()
 
             status_label.configure(
                 text=(
@@ -741,7 +744,6 @@ def main():
                     f"Чекає синхронізації: {unsynced_count}"
                 )
             )
-
             today_count_label.configure(text=f"Сьогодні: {today_count}")
 
         except Exception:
@@ -750,27 +752,23 @@ def main():
                 status_label.configure(
                     text=f"Статус: очікую RFID… | Port: {RFID_PORT} | Чекає синхронізації: ?"
                 )
-                today_count_label.configure(text="?")
+                today_count_label.configure(text="Сьогодні: ?")
             except Exception:
                 pass
-
-    last_flash_job = None
 
     def update_last_registered(flash: bool = False):
         nonlocal last_flash_job
 
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            rows = db_get_visits_for_date(today)
+            row = db_get_last_registered()
 
-            if not rows:
+            if not row:
                 last_registered_label.configure(
                     text="Гарного робочого дня!",
-                    text_color=("#0f8f3d", "#4fe37a")
+                    text_color=("#0f8f3d", "#4fe37a"),
                 )
                 return
 
-            row = rows[-1]
             full_name = (row.get("full_name") or "").strip()
             normal_color = ("gray10", "gray90")
             flash_color = ("#0f8f3d", "#4fe37a")
@@ -814,6 +812,7 @@ def main():
             beeper=beeper,
             update_status=update_status,
             update_last_registered=update_last_registered,
+            registration_service=registration_service,
         )
 
     def open_report():
@@ -822,7 +821,7 @@ def main():
     text_widget, status_label, last_registered_label, today_count_label = build_ui(
         root,
         on_manual=open_manual,
-        on_report=open_report
+        on_report=open_report,
     )
     tklog = TkLogger(root, text_widget, max_lines=500)
 
@@ -830,15 +829,55 @@ def main():
     update_last_registered()
     update_status()
 
-    registration = RegistrationClass(
-        tklog=tklog,
-        beeper=beeper,
-        update_status=update_status,
-        update_last_registered=update_last_registered,
-    )
+    def handle_registration_result(result):
+        if result.status == "ok":
+            tklog.write(f"✅ {result.message} — {result.fmoney}")
+            beeper.beep_ok()
+            update_status()
+            update_last_registered(flash=True)
+            return
 
-    reader = RFIDReader(port=RFID_PORT, callback=registration.process_rfid)
+        if result.status == "duplicate":
+            tklog.write(f"⚠️ {result.message} — не реєструємо")
+            beeper.beep_repeated()
+            update_status()
+            return
+
+        if result.status == "unknown":
+            tklog.write("❌ Невідомий брелок")
+            beeper.beep_unknown()
+            return
+
+        tklog.write(f"🔥 {result.message}")
+        beeper.beep_error()
+
+    def process_rfid_in_ui_thread(rfid: str):
+        try:
+            result = registration_service.register_by_rfid(rfid)
+            handle_registration_result(result)
+        except Exception as e:
+            logger.exception("process_rfid_in_ui_thread error")
+            tklog.write(f"🔥 Помилка: {e}")
+            beeper.beep_error()
+
+    def on_rfid_from_reader(rfid: str):
+        try:
+            rfid_queue.put_nowait(rfid)
+        except queue.Full:
+            logger.warning("RFID queue is full, tag dropped: %s", rfid)
+
+    def poll_rfid_queue():
+        try:
+            while True:
+                rfid = rfid_queue.get_nowait()
+                process_rfid_in_ui_thread(rfid)
+        except queue.Empty:
+            pass
+        root.after(100, poll_rfid_queue)
+
+    reader = RFIDReader(port=RFID_PORT, callback=on_rfid_from_reader)
     reader.start()
+    poll_rfid_queue()
 
     def refresh_status_loop():
         update_status()
@@ -851,6 +890,12 @@ def main():
             reader.stop()
         except Exception:
             pass
+
+        try:
+            sync.stop()
+        except Exception:
+            pass
+
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)

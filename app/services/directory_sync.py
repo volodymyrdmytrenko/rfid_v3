@@ -1,6 +1,8 @@
-from datetime import datetime
+from __future__ import annotations
+
 import threading
 import time
+from datetime import datetime
 
 from app.database.mysql_db import get_mysql_connection
 from app.database.sqlite_db import get_connection
@@ -23,6 +25,9 @@ def ensure_employees_schema(sqlite_conn):
     if "full_name_norm" not in cols:
         scur.execute("ALTER TABLE employees ADD COLUMN full_name_norm TEXT")
 
+    if "fmoney" not in cols:
+        scur.execute("ALTER TABLE employees ADD COLUMN fmoney INTEGER DEFAULT 50")
+
     scur.execute(
         "CREATE INDEX IF NOT EXISTS ix_employees_full_name_norm "
         "ON employees(full_name_norm)"
@@ -30,7 +35,6 @@ def ensure_employees_schema(sqlite_conn):
 
 
 def sync_employees():
-    """Повна синхронізація employees з MySQL → SQLite."""
     logger.info("Syncing employees...")
 
     mysql_conn = None
@@ -43,15 +47,18 @@ def sync_employees():
         mcur = mysql_conn.cursor(dictionary=True)
         scur = sqlite_conn.cursor()
 
-        mcur.execute("""
-            SELECT id, rfid, full_name, fmoney,active, updated_at
+        mcur.execute(
+            """
+            SELECT id, rfid, full_name, COALESCE(fmoney, 50) AS fmoney, active, updated_at
             FROM employees
-        """)
+            """
+        )
         rows = mcur.fetchall()
 
         ensure_employees_schema(sqlite_conn)
 
         prepared_rows = []
+        active_ids = set()
         skipped = 0
 
         for row in rows:
@@ -61,32 +68,62 @@ def sync_employees():
                 continue
 
             full_name = (row.get("full_name") or "").strip()
-            prepared_rows.append((
-                int(row["id"]),
-                rfid,
-                full_name,
-                normalize_name(full_name),
-                int(row.get("fmoney", 50) or 50),
-                int(row.get("active", 1) or 0),
-                str(row.get("updated_at") or datetime.now().isoformat())
-            ))
+            emp_id = int(row["id"])
+            active_ids.add(emp_id)
 
-        scur.execute("DELETE FROM employees")
+            prepared_rows.append(
+                (
+                    emp_id,
+                    rfid,
+                    full_name,
+                    normalize_name(full_name),
+                    int(row.get("fmoney", 50) or 50),
+                    int(row.get("active", 1) or 0),
+                    str(row.get("updated_at") or datetime.now().isoformat(timespec="seconds")),
+                )
+            )
 
-        scur.executemany("""
+        scur.execute("BEGIN")
+
+        scur.executemany(
+            """
             INSERT INTO employees (
                 id, rfid, full_name, full_name_norm, fmoney, active, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, prepared_rows)
+            ON CONFLICT(id) DO UPDATE SET
+                rfid = excluded.rfid,
+                full_name = excluded.full_name,
+                full_name_norm = excluded.full_name_norm,
+                fmoney = excluded.fmoney,
+                active = excluded.active,
+                updated_at = excluded.updated_at
+            """,
+            prepared_rows,
+        )
+
+        if active_ids:
+            placeholders = ",".join("?" for _ in active_ids)
+            scur.execute(
+                f"UPDATE employees SET active = 0 WHERE id NOT IN ({placeholders})",
+                tuple(active_ids),
+            )
+        else:
+            scur.execute("UPDATE employees SET active = 0")
 
         sqlite_conn.commit()
 
         logger.info(
             "Employees synced: %s, skipped without RFID: %s",
             len(prepared_rows),
-            skipped
+            skipped,
         )
+
+    except Exception:
+        if sqlite_conn:
+            sqlite_conn.rollback()
+        logger.exception("sync_employees failed")
+        raise
 
     finally:
         if mysql_conn:
@@ -96,26 +133,24 @@ def sync_employees():
 
 
 def full_sync():
-    """Повна синхронізація всіх довідників."""
-    try:
-        sync_employees()
-        logger.info("Directory sync completed successfully.")
-    except Exception:
-        logger.exception("Directory sync failed")
+    sync_employees()
+    logger.info("Directory sync completed successfully.")
 
 
 def _sync_loop():
     while True:
-        full_sync()
+        try:
+            full_sync()
+        except Exception:
+            logger.exception("Directory sync loop failed")
         time.sleep(SYNC_FULL_INTERVAL)
 
 
 def start_periodic_sync():
-    """Запускає періодичну синхронізацію у фоні."""
     thread = threading.Thread(
         target=_sync_loop,
         name="directory-sync",
-        daemon=True
+        daemon=True,
     )
     thread.start()
     logger.info("Started periodic directory sync thread.")

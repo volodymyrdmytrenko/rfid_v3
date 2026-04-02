@@ -1,74 +1,35 @@
-import logging
+from __future__ import annotations
+
 from collections import defaultdict
 from datetime import datetime
 
 import pyodbc
-import pymysql
-from pymysql.cursors import DictCursor
 
-# =========================
-# MSSQL CONFIG
-# =========================
-MSSQL_SERVER = "100.122.229.15"
-MSSQL_DATABASE = "StopNet4"
-MSSQL_USERNAME = "vd"
-MSSQL_PASSWORD = "112"
-MSSQL_DRIVER = "ODBC Driver 18 for SQL Server"
-# або "ODBC Driver 18 for SQL Server"
-
-# =========================
-# MYSQL CONFIG
-# =========================
-MYSQL_HOST = "vdvm.tailcc200e.ts.net"
-MYSQL_PORT = 3306
-MYSQL_DATABASE = "canteen"
-MYSQL_USERNAME = "canteen"
-MYSQL_PASSWORD = "GNgfvPeRNX0c5n"
-
-# =========================
-# LOGGING
-# =========================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+from app.database.mysql_db import get_mysql_connection
+from app.utils.config import (
+    MSSQL_DATABASE,
+    MSSQL_DRIVER,
+    MSSQL_PASSWORD,
+    MSSQL_SERVER,
+    MSSQL_USERNAME,
+    STOPNET_DEFAULT_FMONEY,
 )
+from app.utils.logger import get_logger
+
+logger = get_logger("StopNetSync")
 
 MSSQL_QUERY = """
-SELECT 
+SELECT
     e.colID AS id,
     ae.colAuthorizationCode AS rfid,
     LTRIM(RTRIM(
         ISNULL(e.colSurname, '') + ' ' + ISNULL(e.colName, '')
     )) AS full_name,
     CAST(1 AS int) AS active,
-    ae.colBeginDateAction AS updated_at,
-    CAST(50 AS int) AS fmoney
+    ae.colBeginDateAction AS updated_at
 FROM StopNet4.dbo.tblEmployees e
 JOIN StopNet4.dbo.tblAccountEmployees ae
     ON e.colID = ae.colHolderID;
-"""
-
-MYSQL_UPSERT = """
-INSERT INTO employees
-    (id, rfid, full_name, active, updated_at, fmoney)
-VALUES
-    (%s, %s, %s, %s, %s, %s)
-ON DUPLICATE KEY UPDATE
-    rfid = VALUES(rfid),
-    full_name = VALUES(full_name),
-    active = VALUES(active),
-    updated_at = VALUES(updated_at);
-"""
-
-MYSQL_DEACTIVATE_MISSING = """
-UPDATE employees
-SET active = 0
-WHERE id NOT IN ({placeholders});
-"""
-
-MYSQL_DEACTIVATE_ALL = """
-UPDATE employees
-SET active = 0;
 """
 
 
@@ -84,19 +45,6 @@ def get_mssql_connection():
     return pyodbc.connect(conn_str)
 
 
-def get_mysql_connection():
-    return pymysql.connect(
-        host=MYSQL_HOST,
-        port=MYSQL_PORT,
-        user=MYSQL_USERNAME,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DATABASE,
-        charset="utf8mb4",
-        cursorclass=DictCursor,
-        autocommit=False,
-    )
-
-
 def fetch_from_mssql():
     conn = get_mssql_connection()
     try:
@@ -106,14 +54,16 @@ def fetch_from_mssql():
 
         raw_data = []
         for row in rows:
-            raw_data.append({
-                "id": int(row.id),
-                "rfid": str(row.rfid) if row.rfid is not None else None,
-                "full_name": row.full_name.strip() if row.full_name else "",
-                "active": int(row.active),
-                "updated_at": row.updated_at,
-                "fmoney": int(row.fmoney),
-            })
+            raw_data.append(
+                {
+                    "id": int(row.id),
+                    "rfid": str(row.rfid).strip() if row.rfid is not None else None,
+                    "full_name": row.full_name.strip() if row.full_name else "",
+                    "active": int(row.active),
+                    "updated_at": row.updated_at,
+                    "fmoney": STOPNET_DEFAULT_FMONEY,
+                }
+            )
 
         return raw_data
     finally:
@@ -129,64 +79,69 @@ def deduplicate_employees(raw_data):
     result = []
 
     for emp_id, rows in grouped.items():
-        if len(rows) > 1:
-            logging.warning(
-                "Працівник id=%s має %s карток у MSSQL. "
-                "Буде використано останній запис за updated_at.",
-                emp_id, len(rows)
-            )
-
         rows_sorted = sorted(
             rows,
             key=lambda x: (
                 x["updated_at"] is not None,
                 x["updated_at"] or datetime.min,
-                x["rfid"] or ""
+                x["rfid"] or "",
             ),
-            reverse=True
+            reverse=True,
         )
-
-        chosen = rows_sorted[0]
-        result.append(chosen)
+        result.append(rows_sorted[0])
 
     return result
 
 
 def sync_to_mysql(data):
     conn = get_mysql_connection()
-
     try:
-        with conn.cursor() as cursor:
-            upsert_data = [
-                (
-                    row["id"],
-                    row["rfid"],
-                    row["full_name"],
-                    row["active"],
-                    row["updated_at"],
-                    row["fmoney"],  # тільки для INSERT
-                )
-                for row in data
-            ]
+        cur = conn.cursor()
 
-            if upsert_data:
-                cursor.executemany(MYSQL_UPSERT, upsert_data)
+        upsert_sql = """
+        INSERT INTO employees
+            (id, rfid, full_name, active, updated_at, fmoney)
+        VALUES
+            (%s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            rfid = VALUES(rfid),
+            full_name = VALUES(full_name),
+            active = VALUES(active),
+            updated_at = VALUES(updated_at),
+            fmoney = VALUES(fmoney)
+        """
 
-            current_ids = sorted({row["id"] for row in data})
+        if data:
+            cur.executemany(
+                upsert_sql,
+                [
+                    (
+                        row["id"],
+                        row["rfid"],
+                        row["full_name"],
+                        row["active"],
+                        row["updated_at"],
+                        row["fmoney"],
+                    )
+                    for row in data
+                ],
+            )
 
-            if current_ids:
-                placeholders = ",".join(["%s"] * len(current_ids))
-                sql = MYSQL_DEACTIVATE_MISSING.format(placeholders=placeholders)
-                cursor.execute(sql, current_ids)
-            else:
-                cursor.execute(MYSQL_DEACTIVATE_ALL)
+            ids = sorted({row["id"] for row in data})
+            placeholders = ",".join(["%s"] * len(ids))
+            cur.execute(
+                f"UPDATE employees SET active = 0 WHERE id NOT IN ({placeholders})",
+                ids,
+            )
+        else:
+            cur.execute("UPDATE employees SET active = 0")
 
         conn.commit()
-        logging.info("Синхронізація завершена. Оброблено працівників: %s", len(data))
+        logger.info("StopNet sync completed. Employees: %s", len(data))
 
     except Exception:
         conn.rollback()
-        logging.exception("Помилка під час синхронізації")
+        logger.exception("StopNet sync failed")
         raise
     finally:
         conn.close()

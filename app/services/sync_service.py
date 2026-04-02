@@ -1,96 +1,122 @@
+from __future__ import annotations
+
 import threading
 import time
-# from datetime import datetime
+
 from app.database.mysql_db import get_mysql_connection
 from app.database.sqlite_db import get_connection
-from app.utils.logger import get_logger
-from app.utils.config import SYNC_VISITS_INTERVAL
 from app.services.state import AppState
+from app.utils.config import SYNC_BATCH_SIZE, SYNC_VISITS_INTERVAL
+from app.utils.logger import get_logger
 
 logger = get_logger("SyncService")
 
 
 class SyncService:
     def __init__(self):
-        self.running = False
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
         self.unsynced_count = 0
 
     def start(self):
-        """Запускає фоновий потік синхронізації."""
-        if self.running:
+        if self._thread and self._thread.is_alive():
             return
-        self.running = True
-        thread = threading.Thread(target=self._loop, daemon=True)
-        thread.start()
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="visits-sync",
+            daemon=True,
+        )
+        self._thread.start()
         logger.info("SyncService started.")
 
     def stop(self):
-        self.running = False
-        logger.info("SyncService stopped.")
+        self._stop_event.set()
+        logger.info("SyncService stop requested.")
 
     def _loop(self):
-        """Періодичний запуск синхронізації."""
-        while self.running:
+        while not self._stop_event.is_set():
             try:
                 self.sync_visits()
-            except Exception as e:
-                logger.error(f"Sync error: {e}")
-            time.sleep(SYNC_VISITS_INTERVAL)
+            except Exception:
+                logger.exception("Sync loop error")
+
+            self._stop_event.wait(SYNC_VISITS_INTERVAL)
 
     def sync_visits(self):
-        """Синхронізує всі несинхронізовані visits."""
-        logger.info("Syncing visits...")
-
         sqlite_conn = get_connection()
-        sqlite_cur = sqlite_conn.cursor()
+        mysql_conn = None
 
-        sqlite_cur.execute("""
-            SELECT id, employee_id, visit_time, source
-            FROM visits
-            WHERE synced = 0
-        """)
-        unsynced = sqlite_cur.fetchall()
-
-        if not unsynced:
-            logger.info("No visits to sync.")
-            unsynced_count = 0
-            return
-        
-        AppState.unsynced_count = self.unsynced_count = len(unsynced)
-
-        logger.info(f"Found {self.unsynced_count} unsynced visits.")
-
-        # Спробуємо записати в MySQL
         try:
+            sqlite_cur = sqlite_conn.cursor()
+            sqlite_cur.execute(
+                """
+                SELECT id, employee_id, visit_time, source, sync_uuid
+                FROM visits
+                WHERE synced = 0
+                ORDER BY id
+                LIMIT ?
+                """,
+                (SYNC_BATCH_SIZE,),
+            )
+            unsynced = sqlite_cur.fetchall()
+
+            self.unsynced_count = len(unsynced)
+            AppState.unsynced_count = self.unsynced_count
+
+            if not unsynced:
+                logger.info("No visits to sync.")
+                return 0
+
             mysql_conn = get_mysql_connection()
             mysql_cur = mysql_conn.cursor()
 
-            for row in unsynced:
-                mysql_cur.execute("""
-                    INSERT INTO visits (employee_id, visit_time, source)
-                    VALUES (%s, %s, %s)
-                """, (
-                    row["employee_id"],
-                    row["visit_time"],
-                    row["source"]
-                ))
+            synced_sqlite_ids: list[int] = []
 
-                # Помічаємо у SQLite як synced
-                sqlite_cur.execute("""
-                    UPDATE visits SET synced = 1 WHERE id = ?
-                """, (row["id"],))
+            for row in unsynced:
+                mysql_cur.execute(
+                    """
+                    INSERT INTO visits (employee_id, visit_time, source, sync_uuid)
+                    VALUES (%s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        employee_id = VALUES(employee_id),
+                        visit_time = VALUES(visit_time),
+                        source = VALUES(source)
+                    """,
+                    (
+                        row["employee_id"],
+                        row["visit_time"],
+                        row["source"],
+                        row["sync_uuid"],
+                    ),
+                )
+                synced_sqlite_ids.append(int(row["id"]))
 
             mysql_conn.commit()
+
+            sqlite_cur.executemany(
+                "UPDATE visits SET synced = 1 WHERE id = ?",
+                [(visit_id,) for visit_id in synced_sqlite_ids],
+            )
             sqlite_conn.commit()
 
-            logger.info(f"Synced {len(unsynced)} visits.")
+            logger.info("Synced %s visits.", len(synced_sqlite_ids))
+            return len(synced_sqlite_ids)
 
-        except Exception as e:
-            logger.error(f"MySQL sync failed: {e}")
+        except Exception:
+            if mysql_conn:
+                try:
+                    mysql_conn.rollback()
+                except Exception:
+                    pass
+            logger.exception("MySQL sync failed")
+            raise
 
         finally:
-            try:
-                mysql_conn.close()
-            except:
-                pass
+            if mysql_conn:
+                try:
+                    mysql_conn.close()
+                except Exception:
+                    pass
             sqlite_conn.close()
