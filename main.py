@@ -707,10 +707,10 @@ def build_ui(root, on_manual, on_report):
 # ------------------ main ------------------
 
 def main():
+    stopnet_sync()
     init_sqlite()
     full_sync()
     cleanup_old_visits()
-    stopnet_sync()
 
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
