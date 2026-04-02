@@ -16,6 +16,7 @@ from app.utils.logger import get_logger
 from app.services.beeper import Beeper
 from app.services.db_helpers import *
 from app.database.sqlite_db import init_sqlite
+from app.utils.stopnet_sync import stopnet_sync
 
 logger = get_logger("MonolithCustomTK")
 
@@ -709,6 +710,7 @@ def main():
     init_sqlite()
     full_sync()
     cleanup_old_visits()
+    stopnet_sync()
 
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
