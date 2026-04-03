@@ -26,3 +26,8 @@ CREATE TABLE IF NOT EXISTS visits (
     INDEX idx_visit_time (visit_time),
     UNIQUE KEY ux_visits_sync_uuid (sync_uuid)
 ) ENGINE=InnoDB;
+
+
+-- CREATE USER 'canteen'@'%' IDENTIFIED BY 'GNgfvPeRNX0c5n';
+-- GRANT SELECT, INSERT, UPDATE ON canteen.* TO 'canteen'@'%';
+-- FLUSH PRIVILEGES;
