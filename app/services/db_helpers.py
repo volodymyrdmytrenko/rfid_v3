@@ -5,6 +5,62 @@ import uuid
 from datetime import datetime
 
 from app.database.sqlite_db import get_connection
+from typing import Any
+
+
+def _visit_time_sort_key(row: dict[str, Any]):
+    """
+    Safe sort key for rows returned by db_get_visits_for_date().
+    Works with datetime or ISO-like string values.
+    """
+    value = row.get("visit_time")
+
+    if value is None:
+        return datetime.min
+
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return datetime.min
+
+        normalized = raw.replace("T", " ")
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+        ):
+            try:
+                return datetime.strptime(normalized, fmt)
+            except ValueError:
+                continue
+
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return datetime.min
+
+    return datetime.min
+
+
+def db_get_last_registered_today() -> dict[str, Any] | None:
+    """
+    Return the last registration row for today only.
+
+    This implementation intentionally uses the already existing
+    db_get_visits_for_date() helper, so you can paste it into the current
+    db_helpers.py without touching connection code.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    rows = db_get_visits_for_date(today)
+
+    if not rows:
+        return None
+
+    return max(rows, key=_visit_time_sort_key)
+
 
 
 def normalize_name(s: str) -> str:

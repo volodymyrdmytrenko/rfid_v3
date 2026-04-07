@@ -12,7 +12,7 @@ from app.database.sqlite_db import init_sqlite
 from app.services.beeper import Beeper
 from app.services.cleanup_old_visits import cleanup_old_visits
 from app.services.db_helpers import (
-    db_get_last_registered,
+    db_get_last_registered_today,
     db_get_today_visits_count,
     db_get_unsynced_count,
     db_get_visits_for_date,
@@ -121,12 +121,10 @@ class TkLogger:
         self.text.configure(state="normal")
         self.text.insert("end", line)
 
-        raw = self.text.get("1.0", "end-1c")
-        lines = raw.splitlines()
-        if len(lines) > self.max_lines:
-            trimmed = "\n".join(lines[-self.max_lines:])
-            self.text.delete("1.0", "end")
-            self.text.insert("1.0", trimmed + ("\n" if trimmed else ""))
+        end_line = int(float(self.text.index("end-1c").split(".")[0]))
+        excess = end_line - self.max_lines
+        if excess > 0:
+            self.text.delete("1.0", f"{excess + 1}.0")
 
         self.text.see("end")
         self.text.configure(state="disabled")
@@ -759,23 +757,17 @@ def main():
     def update_last_registered(flash: bool = False):
         nonlocal last_flash_job
 
-        try:
-            row = db_get_last_registered()
+        normal_color = ("gray10", "gray90")
+        flash_color = ("#0f8f3d", "#4fe37a")
 
-            if not row:
-                last_registered_label.configure(
-                    text="Гарного робочого дня!",
-                    text_color=("#0f8f3d", "#4fe37a"),
-                )
-                return
-
-            full_name = (row.get("full_name") or "").strip()
-            normal_color = ("gray10", "gray90")
-            flash_color = ("#0f8f3d", "#4fe37a")
-
+        def show_greeting():
             last_registered_label.configure(
-                text=full_name.upper() if full_name else "—"
+                text="Гарного робочого дня!",
+                text_color=flash_color,
             )
+
+        try:
+            row = db_get_last_registered_today()
 
             if last_flash_job is not None:
                 try:
@@ -784,7 +776,18 @@ def main():
                     pass
                 last_flash_job = None
 
-            if flash and full_name:
+            if not row:
+                show_greeting()
+                return
+
+            full_name = (row.get("full_name") or "").strip()
+            if not full_name:
+                show_greeting()
+                return
+
+            last_registered_label.configure(text=full_name.upper())
+
+            if flash:
                 last_registered_label.configure(text_color=flash_color)
 
                 def reset_last_label_color():
@@ -801,7 +804,7 @@ def main():
         except Exception:
             logger.exception("update_last_registered error")
             try:
-                last_registered_label.configure(text="—", text_color=("gray10", "gray90"))
+                show_greeting()
             except Exception:
                 pass
 
