@@ -292,6 +292,65 @@ def filter_conflicts_against_mysql(data: list[dict[str, Any]]) -> list[dict[str,
     return result
 
 
+def fetch_from_mssql() -> list[dict[str, Any]]:
+    logger.info("Starting fetch from MSSQL StopNet...")
+
+    conn = None
+    try:
+        conn = get_mssql_connection()
+        cursor = conn.cursor()
+        cursor.execute(MSSQL_QUERY)
+        rows = cursor.fetchall()
+
+        raw_data: list[dict[str, Any]] = []
+
+        for row in rows:
+            try:
+                emp_id = int(row.id)
+            except Exception:
+                logger.warning("Skipping row with invalid employee id: %s", row)
+                continue
+
+            rfid = str(row.rfid).strip() if row.rfid is not None else ""
+            full_name = (row.full_name or "").strip()
+            active = int(row.active or 1)
+            updated_at = row.updated_at
+
+            if not rfid:
+                logger.debug("Skipping employee id=%s because RFID is empty.", emp_id)
+                continue
+
+            raw_data.append(
+                {
+                    "id": emp_id,
+                    "rfid": rfid,
+                    "full_name": full_name,
+                    "active": active,
+                    "updated_at": updated_at,
+                    "fmoney": STOPNET_DEFAULT_FMONEY,
+                }
+            )
+
+        logger.info(
+            "Fetched %s raw employee rows from MSSQL. After empty-RFID filtering: %s",
+            len(rows),
+            len(raw_data),
+        )
+        return raw_data
+
+    except Exception:
+        logger.exception("Failed to fetch employees from MSSQL StopNet")
+        raise
+
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+                logger.info("MSSQL connection closed.")
+            except Exception:
+                logger.exception("Failed to close MSSQL connection")
+
+
 def sync_to_mysql(data: list[dict[str, Any]]) -> int:
     logger.info("Starting sync to MySQL. Rows to sync: %s", len(data))
 
@@ -309,8 +368,7 @@ def sync_to_mysql(data: list[dict[str, Any]]) -> int:
             rfid = VALUES(rfid),
             full_name = VALUES(full_name),
             active = VALUES(active),
-            updated_at = VALUES(updated_at),
-            fmoney = VALUES(fmoney)
+            updated_at = VALUES(updated_at)
         """
 
         if data:
@@ -374,7 +432,7 @@ def sync_to_mysql(data: list[dict[str, Any]]) -> int:
                 logger.info("MySQL connection closed.")
             except Exception:
                 logger.exception("Failed to close MySQL connection")
-
+                
 
 def stopnet_sync() -> int:
     if not ENABLE_STOPNET_SYNC:
