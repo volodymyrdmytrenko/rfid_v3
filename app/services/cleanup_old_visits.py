@@ -1,28 +1,37 @@
-import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.database.sqlite_db import get_connection
 from app.utils.logger import get_logger
-from app.utils.config import DAYS_SAVE
 
 logger = get_logger("Cleanup")
 
 
+def _recent_window_start() -> str:
+    """
+    Keeps current month + previous month.
+    Example:
+      2026-04-14 -> 2026-03-01 00:00:00
+    """
+    now = datetime.now()
+    year = now.year
+    month = now.month - 1
+
+    if month == 0:
+        month = 12
+        year -= 1
+
+    return f"{year:04d}-{month:02d}-01 00:00:00"
+
+
 def cleanup_old_visits() -> int:
-
-    if DAYS_SAVE <= 0:
-        logger.info("cleanup_old_visits skipped (DAYS_SAVE<=0)")
-        return 0
-
-    cutoff_date = datetime.now() - timedelta(days=DAYS_SAVE)
-    cutoff_str = cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_str = _recent_window_start()
 
     conn = get_connection()
     cur = conn.cursor()
 
     cur.execute(
         "DELETE FROM visits WHERE visit_time < ?",
-        (cutoff_str,)
+        (cutoff_str,),
     )
 
     deleted = cur.rowcount
@@ -31,7 +40,9 @@ def cleanup_old_visits() -> int:
     conn.close()
 
     logger.info(
-        f"cleanup_old_visits: deleted={deleted}, older_than_days={DAYS_SAVE}"
+        "cleanup_old_visits: deleted=%s, window_start=%s",
+        deleted,
+        cutoff_str,
     )
 
     return deleted
