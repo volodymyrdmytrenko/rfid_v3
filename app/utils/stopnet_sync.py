@@ -106,7 +106,6 @@ def fetch_from_mssql() -> list[dict[str, Any]]:
                     "full_name": full_name,
                     "active": active,
                     "updated_at": updated_at,
-                    "fmoney": STOPNET_DEFAULT_FMONEY,
                 }
             )
 
@@ -251,7 +250,6 @@ def sync_to_mysql(data: list[dict[str, Any]]) -> int:
             full_name = VALUES(full_name),
             active = VALUES(active),
             updated_at = VALUES(updated_at),
-            fmoney = VALUES(fmoney)
         """
 
         synced_ids: list[int] = []
