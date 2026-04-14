@@ -249,9 +249,8 @@ def sync_to_mysql(data: list[dict[str, Any]]) -> int:
             rfid = VALUES(rfid),
             full_name = VALUES(full_name),
             active = VALUES(active),
-            updated_at = VALUES(updated_at),
+            updated_at = VALUES(updated_at)
         """
-
         synced_ids: list[int] = []
 
         for row in data:
@@ -347,7 +346,7 @@ def sync_to_mysql(data: list[dict[str, Any]]) -> int:
                         row["full_name"],
                         row["active"],
                         row["updated_at"],
-                        row["fmoney"],
+                        STOPNET_DEFAULT_FMONEY,
                     ),
                 )
             except Exception:
