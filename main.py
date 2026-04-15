@@ -453,7 +453,6 @@ class ReportWindow:
             foreground="white",
             borderwidth=1,
         )
-
         self.date_entry.pack(side="left", padx=(8, 12))
         self.date_entry.focus_set()
 
@@ -466,7 +465,15 @@ class ReportWindow:
         self.btn_show.pack(side="left")
 
         self.msg = ctk.CTkLabel(main, text="", text_color="#9aa0a6")
-        self.msg.pack(fill="x", padx=16, pady=(0, 8))
+        self.msg.pack(fill="x", padx=16, pady=(0, 4))
+
+        self.total_label = ctk.CTkLabel(
+            main,
+            text="Всього: 0",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            anchor="w",
+        )
+        self.total_label.pack(fill="x", padx=16, pady=(0, 8))
 
         table_wrap = ctk.CTkFrame(main)
         table_wrap.pack(fill="both", expand=True, padx=16, pady=(0, 8))
@@ -578,6 +585,7 @@ class ReportWindow:
 
         if not self.validate_date(report_date):
             self.msg.configure(text="Некоректна дата")
+            self.total_label.configure(text="Всього: 0")
             return
 
         try:
@@ -597,12 +605,16 @@ class ReportWindow:
                 self.tree.focus(first)
                 self.tree.see(first)
 
+            total_fmoney = sum(int(row.get("fmoney") or 0) for row in self.rows)
+
             self.msg.configure(text=f"Записів: {len(self.rows)}")
+            self.total_label.configure(text=f"Всього: {total_fmoney}")
             self.tklog.write(f"📄 Сформовано звіт за дату {report_date} ({len(self.rows)} записів)")
 
         except Exception as e:
             logger.exception("load_report error")
             self.msg.configure(text=f"Помилка формування звіту: {e}")
+            self.total_label.configure(text="Всього: 0")
 
     def save_report(self):
         if not self.rows:
@@ -627,7 +639,9 @@ class ReportWindow:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(title_line + "\n")
-                f.write("=" * len(title_line) + "\n\n")
+                f.write("=" * len(title_line) + "\n")
+                f.write(f"Всього: {sum(int(row.get('fmoney') or 0) for row in self.rows)}\n\n")
+
                 for row in self.rows:
                     f.write(f"{row['visit_time']} | {row['full_name']} | {row['fmoney']}\n")
 
@@ -636,6 +650,7 @@ class ReportWindow:
         except Exception as e:
             logger.exception("save_report error")
             messagebox.showerror("Звіт", f"Не вдалося зберегти файл:\n{e}")
+            
 
 # ------------------ UI ------------------
 
