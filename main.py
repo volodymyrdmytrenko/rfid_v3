@@ -25,6 +25,7 @@ from app.services.sync_service import SyncService
 from app.utils.config import ENABLE_STOPNET_SYNC, RFID_PORT, validate_config
 from app.utils.logger import get_logger
 from app.utils.stopnet_sync import stopnet_sync
+from tkcalendar import DateEntry
 
 logger = get_logger("MonolithCustomTK")
 
@@ -406,8 +407,6 @@ class ReportWindow:
         self.tklog = tklog
         self.rows = []
 
-        today = datetime.now().strftime("%Y-%m-%d")
-
         self.win = ctk.CTkToplevel(root)
         self.win.withdraw()
         set_app_icon(self.win, "favicon.ico")
@@ -432,7 +431,7 @@ class ReportWindow:
         ).pack(anchor="w")
         ctk.CTkLabel(
             header,
-            text="Формат дати: YYYY-MM-DD",
+            text="Оберіть дату в календарі",
             text_color="#9aa0a6",
         ).pack(anchor="w", pady=(4, 0))
 
@@ -441,12 +440,29 @@ class ReportWindow:
 
         ctk.CTkLabel(filters, text="Дата:").pack(side="left")
 
-        self.date_entry = ctk.CTkEntry(filters, width=160)
+        self.date_entry = DateEntry(
+            filters,
+            width=14,
+            date_pattern="yyyy-mm-dd",
+            locale="uk_UA",
+            year=datetime.now().year,
+            month=datetime.now().month,
+            day=datetime.now().day,
+            firstweekday="monday",
+            background="#3B8ED0",
+            foreground="white",
+            borderwidth=1,
+        )
+
         self.date_entry.pack(side="left", padx=(8, 12))
-        self.date_entry.insert(0, today)
         self.date_entry.focus_set()
 
-        self.btn_show = ctk.CTkButton(filters, text="Показати", width=110, command=self.load_report)
+        self.btn_show = ctk.CTkButton(
+            filters,
+            text="Показати",
+            width=110,
+            command=self.load_report,
+        )
         self.btn_show.pack(side="left")
 
         self.msg = ctk.CTkLabel(main, text="", text_color="#9aa0a6")
@@ -486,7 +502,12 @@ class ReportWindow:
         )
         self.btn_close.pack(side="right")
 
-        self.btn_save = ctk.CTkButton(actions, text="Зберегти", width=110, command=self.save_report)
+        self.btn_save = ctk.CTkButton(
+            actions,
+            text="Зберегти",
+            width=110,
+            command=self.save_report,
+        )
         self.btn_save.pack(side="right", padx=(0, 8))
 
         self.win.bind("<Escape>", lambda e: self.win.destroy())
@@ -535,6 +556,9 @@ class ReportWindow:
         self.tree.see(first)
         return True
 
+    def get_selected_report_date(self) -> str:
+        return (self.date_entry.get() or "").strip()
+
     def on_date_return(self, _e=None):
         self.load_report()
         return "break"
@@ -550,10 +574,10 @@ class ReportWindow:
         return "break"
 
     def load_report(self):
-        report_date = (self.date_entry.get() or "").strip()
+        report_date = self.get_selected_report_date()
 
         if not self.validate_date(report_date):
-            self.msg.configure(text="Некоректний формат дати. Використовуй YYYY-MM-DD")
+            self.msg.configure(text="Некоректна дата")
             return
 
         try:
@@ -585,7 +609,7 @@ class ReportWindow:
             messagebox.showwarning("Звіт", "Немає даних для збереження")
             return
 
-        report_date = (self.date_entry.get() or "").strip()
+        report_date = self.get_selected_report_date()
         default_name = f"report_{report_date}.txt"
         title_line = f"Звіт за дату: {report_date}"
 
@@ -612,7 +636,6 @@ class ReportWindow:
         except Exception as e:
             logger.exception("save_report error")
             messagebox.showerror("Звіт", f"Не вдалося зберегти файл:\n{e}")
-
 
 # ------------------ UI ------------------
 
