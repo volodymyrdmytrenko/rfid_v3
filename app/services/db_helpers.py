@@ -142,7 +142,7 @@ def db_get_visits_for_date(report_date: str):
             FROM visits v
             JOIN employees e ON e.id = v.employee_id
             WHERE date(v.visit_time) = date(?)
-            ORDER BY v.visit_time, v.id
+            ORDER BY e.full_name, v.id
             """,
             (report_date,),
         )
