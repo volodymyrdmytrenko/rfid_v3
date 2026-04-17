@@ -113,6 +113,11 @@ class SyncService:
             logger.info("No unsynced local visits to push.")
             return 0
 
+        logger.info(
+            "Preparing to push %s unsynced local visits to MySQL.",
+            len(unsynced),
+        )
+
         mysql_cur = mysql_conn.cursor()
         synced_sqlite_ids: list[int] = []
 
@@ -136,6 +141,11 @@ class SyncService:
             synced_sqlite_ids.append(int(row["id"]))
 
         mysql_conn.commit()
+
+        logger.info(
+            "MySQL commit successful for %s pushed visits. Marking SQLite rows as synced.",
+            len(synced_sqlite_ids),
+        )
 
         sqlite_cur.executemany(
             "UPDATE visits SET synced = 1 WHERE id = ?",
@@ -179,6 +189,12 @@ class SyncService:
                     1,  # pulled from MySQL => already synced by definition
                 )
             )
+
+        logger.info(
+            "Pulling recent visits from MySQL into SQLite mirror. cutoff=%s rows=%s",
+            cutoff_str,
+            len(payload),
+        )
 
         sqlite_cur.execute("BEGIN")
 
@@ -225,31 +241,56 @@ class SyncService:
             if row.get("sync_uuid")
         }
 
+        # IMPORTANT:
+        # Reconcile must only touch rows that are already synced locally.
+        # Fresh local rows with synced=0 may have been created after the current
+        # sync cycle started and may not exist in MySQL yet.
         sqlite_cur.execute(
             """
-            SELECT id, sync_uuid
+            SELECT id, employee_id, visit_time, source, sync_uuid, synced
             FROM visits
             WHERE visit_time >= ?
+              AND synced = 1
             """,
             (cutoff_str,),
         )
         sqlite_rows = sqlite_cur.fetchall()
 
         to_delete: list[tuple[int]] = []
+        deleted_details: list[str] = []
         for row in sqlite_rows:
             sync_uuid = str(row["sync_uuid"]) if row["sync_uuid"] is not None else ""
             if sync_uuid and sync_uuid not in mysql_sync_uuids:
                 to_delete.append((int(row["id"]),))
+                deleted_details.append(
+                    "id=%s employee_id=%s visit_time=%s source=%s sync_uuid=%s"
+                    % (
+                        row["id"],
+                        row["employee_id"],
+                        row["visit_time"],
+                        row["source"],
+                        sync_uuid,
+                    )
+                )
 
         if to_delete:
+            logger.warning(
+                "Reconcile will delete %s SQLite synced rows missing in MySQL recent window: %s",
+                len(to_delete),
+                "; ".join(deleted_details[:20]),
+            )
             sqlite_cur.executemany(
                 "DELETE FROM visits WHERE id = ?",
                 to_delete,
             )
             sqlite_conn.commit()
+        else:
+            logger.info(
+                "Reconcile found no SQLite synced rows missing in MySQL recent window."
+            )
 
         logger.info(
-            "Reconcile finished. Deleted %s SQLite rows missing in MySQL recent window.",
+            "Reconcile finished. Deleted %s SQLite synced rows missing in MySQL recent window.",
             len(to_delete),
         )
         return len(to_delete)
@@ -275,22 +316,32 @@ class SyncService:
         sqlite_conn = get_connection()
         mysql_conn = None
 
+        logger.info("Visits sync started. window_start=%s", cutoff_str)
+
         try:
             self.ensure_sqlite_visits_schema(sqlite_conn)
 
             mysql_conn = get_mysql_connection()
+            logger.info("MySQL connection acquired for visits sync.")
 
             pushed = self.push_unsynced_to_mysql(sqlite_conn, mysql_conn)
             pulled = self.pull_recent_from_mysql(sqlite_conn, mysql_conn, cutoff_str)
             reconciled_deleted = self.reconcile_recent_window(sqlite_conn, mysql_conn, cutoff_str)
             old_deleted = self.cleanup_old_local_visits(sqlite_conn, cutoff_str)
 
+            sqlite_cur = sqlite_conn.cursor()
+            sqlite_cur.execute("SELECT COUNT(*) AS cnt FROM visits WHERE synced = 0")
+            unsynced_after_sync = int(sqlite_cur.fetchone()["cnt"])
+            self.unsynced_count = unsynced_after_sync
+            AppState.unsynced_count = unsynced_after_sync
+
             logger.info(
-                "Visits sync finished. pushed=%s pulled=%s deleted_missing_recent=%s deleted_old=%s window_start=%s",
+                "Visits sync finished. pushed=%s pulled=%s deleted_missing_recent=%s deleted_old=%s unsynced_after_sync=%s window_start=%s",
                 pushed,
                 pulled,
                 reconciled_deleted,
                 old_deleted,
+                unsynced_after_sync,
                 cutoff_str,
             )
 
