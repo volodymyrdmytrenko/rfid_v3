@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.database.mysql_db import get_mysql_connection
@@ -11,6 +11,11 @@ from app.utils.config import SYNC_BATCH_SIZE, SYNC_VISITS_INTERVAL
 from app.utils.logger import get_logger
 
 logger = get_logger("SyncService")
+
+# Small overlap to protect against equal timestamps, clock skew,
+# and writes that happen around the sync boundary.
+PULL_OVERLAP_SECONDS = 30
+SYNC_STATE_KEY_LAST_PULL = "visits_last_pull_at"
 
 
 def _recent_window_start() -> str:
@@ -24,7 +29,6 @@ def _recent_window_start() -> str:
     year = now.year
     month = now.month
 
-    # Previous month relative to current month
     month -= 1
     if month == 0:
         month = 12
@@ -89,8 +93,126 @@ class SyncService:
             "CREATE INDEX IF NOT EXISTS ix_visits_synced "
             "ON visits(synced)"
         )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_visits_employee_visit_time "
+            "ON visits(employee_id, visit_time)"
+        )
 
         sqlite_conn.commit()
+        logger.info("SQLite visits schema verified.")
+
+    def ensure_sqlite_sync_state_schema(self, sqlite_conn):
+        cur = sqlite_conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        sqlite_conn.commit()
+        logger.info("SQLite sync_state schema verified.")
+
+    def get_sync_state_value(self, sqlite_conn, key: str) -> str | None:
+        cur = sqlite_conn.cursor()
+        cur.execute("SELECT value FROM sync_state WHERE key = ?", (key,))
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        try:
+            return row["value"]
+        except Exception:
+            return row[0]
+
+    def set_sync_state_value(self, sqlite_conn, key: str, value: str):
+        cur = sqlite_conn.cursor()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            """
+            INSERT INTO sync_state (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (key, value, now_str),
+        )
+        sqlite_conn.commit()
+
+    def _safe_parse_datetime(self, value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        formats = (
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+        )
+        for fmt in formats:
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _format_datetime(self, value: datetime) -> str:
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _get_pull_since(self, sqlite_conn, cutoff_str: str) -> str:
+        last_pull_raw = self.get_sync_state_value(sqlite_conn, SYNC_STATE_KEY_LAST_PULL)
+        if not last_pull_raw:
+            logger.info(
+                "No last pull watermark found. Initializing pull from retention window start=%s.",
+                cutoff_str,
+            )
+            return cutoff_str
+
+        last_pull_dt = self._safe_parse_datetime(last_pull_raw)
+        cutoff_dt = self._safe_parse_datetime(cutoff_str)
+
+        if last_pull_dt is None or cutoff_dt is None:
+            logger.warning(
+                "Invalid last pull watermark '%s'. Falling back to retention window start=%s.",
+                last_pull_raw,
+                cutoff_str,
+            )
+            return cutoff_str
+
+        pull_since_dt = last_pull_dt - timedelta(seconds=PULL_OVERLAP_SECONDS)
+        if pull_since_dt < cutoff_dt:
+            pull_since_dt = cutoff_dt
+
+        pull_since_str = self._format_datetime(pull_since_dt)
+        logger.info(
+            "Calculated incremental pull watermark. last_pull_at=%s overlap_seconds=%s pull_since=%s.",
+            last_pull_raw,
+            PULL_OVERLAP_SECONDS,
+            pull_since_str,
+        )
+        return pull_since_str
+
+    def refresh_unsynced_count(self, sqlite_conn) -> int:
+        cur = sqlite_conn.cursor()
+        cur.execute("SELECT COUNT(*) AS cnt FROM visits WHERE synced = 0")
+        row = cur.fetchone()
+        try:
+            count = int(row["cnt"])
+        except Exception:
+            count = int(row[0])
+
+        self.unsynced_count = count
+        AppState.unsynced_count = count
+        return count
 
     def push_unsynced_to_mysql(self, sqlite_conn, mysql_conn) -> int:
         sqlite_cur = sqlite_conn.cursor()
@@ -114,14 +236,23 @@ class SyncService:
             return 0
 
         logger.info(
-            "Preparing to push %s unsynced local visits to MySQL.",
+            "Preparing to push %s unsynced local visits to MySQL (batch_size=%s).",
             len(unsynced),
+            SYNC_BATCH_SIZE,
         )
 
         mysql_cur = mysql_conn.cursor()
         synced_sqlite_ids: list[int] = []
 
         for row in unsynced:
+            logger.info(
+                "Push candidate: sqlite_id=%s employee_id=%s visit_time=%s source=%s sync_uuid=%s",
+                row["id"],
+                row["employee_id"],
+                row["visit_time"],
+                row["source"],
+                row["sync_uuid"],
+            )
             mysql_cur.execute(
                 """
                 INSERT INTO visits (employee_id, visit_time, source, sync_uuid)
@@ -141,11 +272,7 @@ class SyncService:
             synced_sqlite_ids.append(int(row["id"]))
 
         mysql_conn.commit()
-
-        logger.info(
-            "MySQL commit successful for %s pushed visits. Marking SQLite rows as synced.",
-            len(synced_sqlite_ids),
-        )
+        logger.info("MySQL commit completed for %s pushed local visits.", len(synced_sqlite_ids))
 
         sqlite_cur.executemany(
             "UPDATE visits SET synced = 1 WHERE id = ?",
@@ -158,10 +285,20 @@ class SyncService:
 
     def pull_recent_from_mysql(self, sqlite_conn, mysql_conn, cutoff_str: str) -> int:
         """
-        Mirrors all visits from MySQL to SQLite inside the retention window.
+        Pulls only recent changes from MySQL into SQLite.
+        Uses a persisted watermark with a small overlap window to reduce traffic
+        and avoid missing rows around sync boundaries.
         """
+        pull_since_str = self._get_pull_since(sqlite_conn, cutoff_str)
+
         mysql_cur = mysql_conn.cursor(dictionary=True)
         sqlite_cur = sqlite_conn.cursor()
+
+        logger.info(
+            "Starting incremental MySQL->SQLite pull. retention_window_start=%s pull_since=%s.",
+            cutoff_str,
+            pull_since_str,
+        )
 
         mysql_cur.execute(
             """
@@ -170,34 +307,36 @@ class SyncService:
             WHERE visit_time >= %s
             ORDER BY visit_time, sync_uuid
             """,
-            (cutoff_str,),
+            (pull_since_str,),
         )
         rows = mysql_cur.fetchall()
 
         if not rows:
-            logger.info("No recent visits found in MySQL for local mirror window.")
+            logger.info(
+                "No recent MySQL changes found for incremental pull since %s.",
+                pull_since_str,
+            )
             return 0
 
         payload: list[tuple[Any, Any, Any, Any, int]] = []
+        max_visit_time: datetime | None = None
+
         for row in rows:
+            visit_time = row["visit_time"]
             payload.append(
                 (
                     int(row["employee_id"]),
-                    row["visit_time"],
+                    visit_time,
                     row["source"],
                     row["sync_uuid"],
-                    1,  # pulled from MySQL => already synced by definition
+                    1,
                 )
             )
-
-        logger.info(
-            "Pulling recent visits from MySQL into SQLite mirror. cutoff=%s rows=%s",
-            cutoff_str,
-            len(payload),
-        )
+            visit_time_dt = self._safe_parse_datetime(visit_time)
+            if visit_time_dt and (max_visit_time is None or visit_time_dt > max_visit_time):
+                max_visit_time = visit_time_dt
 
         sqlite_cur.execute("BEGIN")
-
         sqlite_cur.executemany(
             """
             INSERT INTO visits (employee_id, visit_time, source, sync_uuid, synced)
@@ -210,102 +349,43 @@ class SyncService:
             """,
             payload,
         )
-
         sqlite_conn.commit()
 
+        if max_visit_time is not None:
+            new_last_pull_at = self._format_datetime(max_visit_time)
+            self.set_sync_state_value(sqlite_conn, SYNC_STATE_KEY_LAST_PULL, new_last_pull_at)
+            logger.info(
+                "Updated incremental pull watermark: %s -> %s.",
+                pull_since_str,
+                new_last_pull_at,
+            )
+        else:
+            logger.warning(
+                "Pulled %s rows from MySQL, but could not compute max visit_time. Watermark unchanged.",
+                len(payload),
+            )
+
         logger.info(
-            "Pulled %s recent visits from MySQL into SQLite mirror.",
+            "Pulled %s recent visits from MySQL into SQLite mirror (incremental).",
             len(payload),
         )
         return len(payload)
 
-    def reconcile_recent_window(self, sqlite_conn, mysql_conn, cutoff_str: str) -> int:
-        """
-        Removes from SQLite recent-window rows that no longer exist in MySQL.
-        This keeps SQLite equal to MySQL for the retained window.
-        """
-        mysql_cur = mysql_conn.cursor(dictionary=True)
-        sqlite_cur = sqlite_conn.cursor()
-
-        mysql_cur.execute(
-            """
-            SELECT sync_uuid
-            FROM visits
-            WHERE visit_time >= %s
-            """,
-            (cutoff_str,),
-        )
-        mysql_sync_uuids = {
-            str(row["sync_uuid"])
-            for row in mysql_cur.fetchall()
-            if row.get("sync_uuid")
-        }
-
-        # IMPORTANT:
-        # Reconcile must only touch rows that are already synced locally.
-        # Fresh local rows with synced=0 may have been created after the current
-        # sync cycle started and may not exist in MySQL yet.
-        sqlite_cur.execute(
-            """
-            SELECT id, employee_id, visit_time, source, sync_uuid, synced
-            FROM visits
-            WHERE visit_time >= ?
-              AND synced = 1
-            """,
-            (cutoff_str,),
-        )
-        sqlite_rows = sqlite_cur.fetchall()
-
-        to_delete: list[tuple[int]] = []
-        deleted_details: list[str] = []
-        for row in sqlite_rows:
-            sync_uuid = str(row["sync_uuid"]) if row["sync_uuid"] is not None else ""
-            if sync_uuid and sync_uuid not in mysql_sync_uuids:
-                to_delete.append((int(row["id"]),))
-                deleted_details.append(
-                    "id=%s employee_id=%s visit_time=%s source=%s sync_uuid=%s"
-                    % (
-                        row["id"],
-                        row["employee_id"],
-                        row["visit_time"],
-                        row["source"],
-                        sync_uuid,
-                    )
-                )
-
-        if to_delete:
-            logger.warning(
-                "Reconcile will delete %s SQLite synced rows missing in MySQL recent window: %s",
-                len(to_delete),
-                "; ".join(deleted_details[:20]),
-            )
-            sqlite_cur.executemany(
-                "DELETE FROM visits WHERE id = ?",
-                to_delete,
-            )
-            sqlite_conn.commit()
-        else:
-            logger.info(
-                "Reconcile found no SQLite synced rows missing in MySQL recent window."
-            )
-
-        logger.info(
-            "Reconcile finished. Deleted %s SQLite synced rows missing in MySQL recent window.",
-            len(to_delete),
-        )
-        return len(to_delete)
-
     def cleanup_old_local_visits(self, sqlite_conn, cutoff_str: str) -> int:
         sqlite_cur = sqlite_conn.cursor()
         sqlite_cur.execute(
-            "DELETE FROM visits WHERE visit_time < ?",
+            """
+            DELETE FROM visits
+            WHERE visit_time < ?
+              AND synced = 1
+            """,
             (cutoff_str,),
         )
         deleted = sqlite_cur.rowcount
         sqlite_conn.commit()
 
         logger.info(
-            "Deleted %s old SQLite visits older than %s.",
+            "Deleted %s old synced SQLite visits older than %s.",
             deleted,
             cutoff_str,
         )
@@ -316,41 +396,43 @@ class SyncService:
         sqlite_conn = get_connection()
         mysql_conn = None
 
-        logger.info("Visits sync started. window_start=%s", cutoff_str)
-
         try:
+            logger.info("Visits sync started. retention_window_start=%s", cutoff_str)
             self.ensure_sqlite_visits_schema(sqlite_conn)
+            self.ensure_sqlite_sync_state_schema(sqlite_conn)
+
+            unsynced_before = self.refresh_unsynced_count(sqlite_conn)
+            logger.info("Unsynced local visits before sync: %s", unsynced_before)
 
             mysql_conn = get_mysql_connection()
-            logger.info("MySQL connection acquired for visits sync.")
+            logger.info("MySQL connection acquired.")
 
             pushed = self.push_unsynced_to_mysql(sqlite_conn, mysql_conn)
             pulled = self.pull_recent_from_mysql(sqlite_conn, mysql_conn, cutoff_str)
-            reconciled_deleted = self.reconcile_recent_window(sqlite_conn, mysql_conn, cutoff_str)
             old_deleted = self.cleanup_old_local_visits(sqlite_conn, cutoff_str)
 
-            sqlite_cur = sqlite_conn.cursor()
-            sqlite_cur.execute("SELECT COUNT(*) AS cnt FROM visits WHERE synced = 0")
-            unsynced_after_sync = int(sqlite_cur.fetchone()["cnt"])
-            self.unsynced_count = unsynced_after_sync
-            AppState.unsynced_count = unsynced_after_sync
+            unsynced_after = self.refresh_unsynced_count(sqlite_conn)
+            last_pull_at = self.get_sync_state_value(sqlite_conn, SYNC_STATE_KEY_LAST_PULL)
 
             logger.info(
-                "Visits sync finished. pushed=%s pulled=%s deleted_missing_recent=%s deleted_old=%s unsynced_after_sync=%s window_start=%s",
+                "Visits sync finished. pushed=%s pulled=%s deleted_old=%s unsynced_before=%s unsynced_after=%s window_start=%s last_pull_at=%s",
                 pushed,
                 pulled,
-                reconciled_deleted,
                 old_deleted,
-                unsynced_after_sync,
+                unsynced_before,
+                unsynced_after,
                 cutoff_str,
+                last_pull_at,
             )
 
             return {
                 "pushed": pushed,
                 "pulled": pulled,
-                "deleted_missing_recent": reconciled_deleted,
                 "deleted_old": old_deleted,
+                "unsynced_before": unsynced_before,
+                "unsynced_after": unsynced_after,
                 "window_start": cutoff_str,
+                "last_pull_at": last_pull_at,
             }
 
         except Exception:
