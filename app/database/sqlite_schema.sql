@@ -21,11 +21,12 @@ CREATE TABLE IF NOT EXISTS visits (
     FOREIGN KEY (employee_id) REFERENCES employees(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_visits_time ON visits(visit_time);
-CREATE INDEX IF NOT EXISTS idx_visits_synced ON visits(synced);
-
-CREATE UNIQUE INDEX IF NOT EXISTS ux_visits_employee_day
+CREATE UNIQUE INDEX ux_visits_employee_day
 ON visits(employee_id, date(visit_time));
+CREATE UNIQUE INDEX ux_visits_sync_uuid ON visits(sync_uuid);
+CREATE INDEX ix_visits_visit_time ON visits(visit_time);
+CREATE INDEX ix_visits_synced ON visits(synced);
+CREATE INDEX ix_visits_employee_visit_time ON visits(employee_id, visit_time);
 
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
