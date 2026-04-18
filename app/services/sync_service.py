@@ -9,6 +9,7 @@ from app.database.sqlite_db import get_connection
 from app.services.state import AppState
 from app.utils.config import SYNC_BATCH_SIZE, SYNC_VISITS_INTERVAL
 from app.utils.logger import get_logger
+from mysql.connector.errors import IntegrityError as MySQLIntegrityError
 
 logger = get_logger("SyncService")
 
@@ -213,6 +214,7 @@ class SyncService:
         self.unsynced_count = count
         AppState.unsynced_count = count
         return count
+    
 
     def push_unsynced_to_mysql(self, sqlite_conn, mysql_conn) -> int:
         sqlite_cur = sqlite_conn.cursor()
@@ -235,69 +237,149 @@ class SyncService:
             logger.info("No unsynced local visits to push.")
             return 0
 
-        logger.info(
-            "Preparing to push %s unsynced local visits to MySQL (batch_size=%s).",
-            len(unsynced),
-            SYNC_BATCH_SIZE,
-        )
-
-        mysql_cur = mysql_conn.cursor()
+        mysql_cur = mysql_conn.cursor(dictionary=True)
         synced_sqlite_ids: list[int] = []
 
+        inserted_count = 0
+        duplicate_sync_uuid_count = 0
+        employee_day_conflict_count = 0
+
+        logger.info("Preparing to push %s unsynced local visits to MySQL.", len(unsynced))
+
         for row in unsynced:
-            logger.info(
-                "Push candidate: sqlite_id=%s employee_id=%s visit_time=%s source=%s sync_uuid=%s",
-                row["id"],
-                row["employee_id"],
-                row["visit_time"],
-                row["source"],
-                row["sync_uuid"],
-            )
-            mysql_cur.execute(
-                """
-                INSERT INTO visits (employee_id, visit_time, source, sync_uuid)
-                VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    employee_id = VALUES(employee_id),
-                    visit_time = VALUES(visit_time),
-                    source = VALUES(source)
-                """,
-                (
-                    row["employee_id"],
-                    row["visit_time"],
-                    row["source"],
-                    row["sync_uuid"],
-                ),
-            )
-            synced_sqlite_ids.append(int(row["id"]))
+            sqlite_id = int(row["id"])
+            employee_id = int(row["employee_id"])
+            visit_time = row["visit_time"]
+            source = row["source"]
+            sync_uuid = row["sync_uuid"]
+
+            try:
+                mysql_cur.execute(
+                    """
+                    INSERT INTO visits (employee_id, visit_time, source, sync_uuid)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (employee_id, visit_time, source, sync_uuid),
+                )
+
+                synced_sqlite_ids.append(sqlite_id)
+                inserted_count += 1
+
+                logger.info(
+                    "MySQL insert OK. sqlite_id=%s employee_id=%s visit_time=%s source=%s sync_uuid=%s",
+                    sqlite_id,
+                    employee_id,
+                    visit_time,
+                    source,
+                    sync_uuid,
+                )
+
+            except MySQLIntegrityError as e:
+                err_text = str(e)
+
+                # 1) Нормальний кейс: цей sync_uuid уже є в MySQL
+                if "ux_visits_sync_uuid" in err_text:
+                    duplicate_sync_uuid_count += 1
+                    synced_sqlite_ids.append(sqlite_id)
+
+                    logger.warning(
+                        "MySQL duplicate by sync_uuid. Marking local row as synced. "
+                        "sqlite_id=%s employee_id=%s visit_time=%s source=%s sync_uuid=%s error=%s",
+                        sqlite_id,
+                        employee_id,
+                        visit_time,
+                        source,
+                        sync_uuid,
+                        err_text,
+                    )
+                    continue
+
+                # 2) Конфлікт бізнес-правила: у MySQL уже є візит цього працівника за цей день
+                if "ux_visits_employee_day" in err_text:
+                    employee_day_conflict_count += 1
+
+                    mysql_cur.execute(
+                        """
+                        SELECT id, employee_id, visit_time, source, sync_uuid, visit_date
+                        FROM visits
+                        WHERE employee_id = %s
+                        AND visit_date = DATE(%s)
+                        LIMIT 1
+                        """,
+                        (employee_id, visit_time),
+                    )
+                    existing = mysql_cur.fetchone()
+
+                    logger.error(
+                        "MySQL employee-day conflict. Local row NOT marked as synced. "
+                        "sqlite_id=%s employee_id=%s local_visit_time=%s local_source=%s local_sync_uuid=%s "
+                        "mysql_existing_id=%s mysql_existing_visit_time=%s mysql_existing_source=%s "
+                        "mysql_existing_sync_uuid=%s mysql_existing_visit_date=%s error=%s",
+                        sqlite_id,
+                        employee_id,
+                        visit_time,
+                        source,
+                        sync_uuid,
+                        existing["id"] if existing else None,
+                        existing["visit_time"] if existing else None,
+                        existing["source"] if existing else None,
+                        existing["sync_uuid"] if existing else None,
+                        existing["visit_date"] if existing else None,
+                        err_text,
+                    )
+                    continue
+
+                logger.exception(
+                    "Unexpected MySQL integrity error while pushing visit. "
+                    "sqlite_id=%s employee_id=%s visit_time=%s source=%s sync_uuid=%s",
+                    sqlite_id,
+                    employee_id,
+                    visit_time,
+                    source,
+                    sync_uuid,
+                )
+                raise
 
         mysql_conn.commit()
-        logger.info("MySQL commit completed for %s pushed local visits.", len(synced_sqlite_ids))
 
-        sqlite_cur.executemany(
-            "UPDATE visits SET synced = 1 WHERE id = ?",
-            [(visit_id,) for visit_id in synced_sqlite_ids],
+        if synced_sqlite_ids:
+            sqlite_cur.executemany(
+                "UPDATE visits SET synced = 1 WHERE id = ?",
+                [(visit_id,) for visit_id in synced_sqlite_ids],
+            )
+            sqlite_conn.commit()
+
+        logger.info(
+            "Push to MySQL finished. inserted=%s duplicate_sync_uuid=%s employee_day_conflicts=%s marked_synced=%s",
+            inserted_count,
+            duplicate_sync_uuid_count,
+            employee_day_conflict_count,
+            len(synced_sqlite_ids),
         )
-        sqlite_conn.commit()
 
-        logger.info("Pushed %s local visits to MySQL.", len(synced_sqlite_ids))
-        return len(synced_sqlite_ids)
+        return inserted_count
+
 
     def pull_recent_from_mysql(self, sqlite_conn, mysql_conn, cutoff_str: str) -> int:
         """
-        Pulls only recent changes from MySQL into SQLite.
-        Uses a persisted watermark with a small overlap window to reduce traffic
-        and avoid missing rows around sync boundaries.
-        """
-        pull_since_str = self._get_pull_since(sqlite_conn, cutoff_str)
+        Incrementally mirrors visits from MySQL to SQLite inside the retention window.
 
+        Rules:
+        - sync_uuid is the identity of the same event across DBs
+        - employee_id + date(visit_time) is a business uniqueness rule
+        - if MySQL contains a row that conflicts with an existing SQLite employee-day row
+        but has a different sync_uuid, we do NOT insert it and do NOT crash the sync;
+        we log a detailed conflict for manual investigation.
+        """
         mysql_cur = mysql_conn.cursor(dictionary=True)
         sqlite_cur = sqlite_conn.cursor()
+
+        pull_since = self.get_pull_watermark(sqlite_conn, cutoff_str)
 
         logger.info(
             "Starting incremental MySQL->SQLite pull. retention_window_start=%s pull_since=%s.",
             cutoff_str,
-            pull_since_str,
+            pull_since,
         )
 
         mysql_cur.execute(
@@ -307,69 +389,171 @@ class SyncService:
             WHERE visit_time >= %s
             ORDER BY visit_time, sync_uuid
             """,
-            (pull_since_str,),
+            (pull_since,),
         )
         rows = mysql_cur.fetchall()
 
         if not rows:
-            logger.info(
-                "No recent MySQL changes found for incremental pull since %s.",
-                pull_since_str,
-            )
+            logger.info("No MySQL visits found for incremental pull since %s.", pull_since)
             return 0
 
-        payload: list[tuple[Any, Any, Any, Any, int]] = []
-        max_visit_time: datetime | None = None
+        logger.info("Fetched %s MySQL visits for incremental pull.", len(rows))
 
-        for row in rows:
-            visit_time = row["visit_time"]
-            payload.append(
-                (
-                    int(row["employee_id"]),
-                    visit_time,
-                    row["source"],
-                    row["sync_uuid"],
-                    1,
-                )
-            )
-            visit_time_dt = self._safe_parse_datetime(visit_time)
-            if visit_time_dt and (max_visit_time is None or visit_time_dt > max_visit_time):
-                max_visit_time = visit_time_dt
+        inserted_count = 0
+        updated_by_sync_uuid_count = 0
+        employee_day_conflict_count = 0
+        skipped_bad_rows_count = 0
+
+        latest_visit_time = None
 
         sqlite_cur.execute("BEGIN")
-        sqlite_cur.executemany(
-            """
-            INSERT INTO visits (employee_id, visit_time, source, sync_uuid, synced)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(sync_uuid) DO UPDATE SET
-                employee_id = excluded.employee_id,
-                visit_time = excluded.visit_time,
-                source = excluded.source,
-                synced = 1
-            """,
-            payload,
-        )
-        sqlite_conn.commit()
 
-        if max_visit_time is not None:
-            new_last_pull_at = self._format_datetime(max_visit_time)
-            self.set_sync_state_value(sqlite_conn, SYNC_STATE_KEY_LAST_PULL, new_last_pull_at)
-            logger.info(
-                "Updated incremental pull watermark: %s -> %s.",
-                pull_since_str,
-                new_last_pull_at,
-            )
-        else:
-            logger.warning(
-                "Pulled %s rows from MySQL, but could not compute max visit_time. Watermark unchanged.",
-                len(payload),
-            )
+        try:
+            for row in rows:
+                employee_id = int(row["employee_id"])
+                visit_time = row["visit_time"]
+                source = row["source"]
+                sync_uuid = row["sync_uuid"]
+
+                if not visit_time or not sync_uuid:
+                    skipped_bad_rows_count += 1
+                    logger.error(
+                        "Skipping invalid MySQL row during pull. employee_id=%s visit_time=%s source=%s sync_uuid=%s",
+                        employee_id,
+                        visit_time,
+                        source,
+                        sync_uuid,
+                    )
+                    continue
+
+                # Track watermark candidate
+                if latest_visit_time is None or str(visit_time) > str(latest_visit_time):
+                    latest_visit_time = visit_time
+
+                # 1) Exact same event already exists locally by sync_uuid -> update it
+                sqlite_cur.execute(
+                    """
+                    SELECT id, employee_id, visit_time, source, sync_uuid, synced
+                    FROM visits
+                    WHERE sync_uuid = ?
+                    LIMIT 1
+                    """,
+                    (sync_uuid,),
+                )
+                existing_by_uuid = sqlite_cur.fetchone()
+
+                if existing_by_uuid:
+                    sqlite_cur.execute(
+                        """
+                        UPDATE visits
+                        SET employee_id = ?,
+                            visit_time = ?,
+                            source = ?,
+                            synced = 1
+                        WHERE sync_uuid = ?
+                        """,
+                        (
+                            employee_id,
+                            visit_time,
+                            source,
+                            sync_uuid,
+                        ),
+                    )
+                    updated_by_sync_uuid_count += 1
+
+                    logger.info(
+                        "SQLite row updated by sync_uuid during pull. sqlite_id=%s employee_id=%s visit_time=%s source=%s sync_uuid=%s",
+                        existing_by_uuid["id"],
+                        employee_id,
+                        visit_time,
+                        source,
+                        sync_uuid,
+                    )
+                    continue
+
+                # 2) No same sync_uuid, but maybe same employee-day already exists locally
+                sqlite_cur.execute(
+                    """
+                    SELECT id, employee_id, visit_time, source, sync_uuid, synced
+                    FROM visits
+                    WHERE employee_id = ?
+                    AND date(visit_time) = date(?)
+                    LIMIT 1
+                    """,
+                    (employee_id, visit_time),
+                )
+                existing_employee_day = sqlite_cur.fetchone()
+
+                if existing_employee_day:
+                    employee_day_conflict_count += 1
+
+                    logger.error(
+                        "Employee-day conflict during MySQL->SQLite pull. MySQL row NOT inserted. "
+                        "mysql_employee_id=%s mysql_visit_time=%s mysql_source=%s mysql_sync_uuid=%s "
+                        "sqlite_existing_id=%s sqlite_existing_visit_time=%s sqlite_existing_source=%s "
+                        "sqlite_existing_sync_uuid=%s sqlite_existing_synced=%s",
+                        employee_id,
+                        visit_time,
+                        source,
+                        sync_uuid,
+                        existing_employee_day["id"],
+                        existing_employee_day["visit_time"],
+                        existing_employee_day["source"],
+                        existing_employee_day["sync_uuid"],
+                        existing_employee_day["synced"],
+                    )
+                    continue
+
+                # 3) Clean insert
+                sqlite_cur.execute(
+                    """
+                    INSERT INTO visits (employee_id, visit_time, source, sync_uuid, synced)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        employee_id,
+                        visit_time,
+                        source,
+                        sync_uuid,
+                        1,  # pulled from MySQL => synced
+                    ),
+                )
+                inserted_count += 1
+
+                logger.info(
+                    "Inserted MySQL row into SQLite. employee_id=%s visit_time=%s source=%s sync_uuid=%s",
+                    employee_id,
+                    visit_time,
+                    source,
+                    sync_uuid,
+                )
+
+            sqlite_conn.commit()
+
+        except Exception:
+            sqlite_conn.rollback()
+            logger.exception("Incremental MySQL->SQLite pull failed and was rolled back.")
+            raise
+
+        # Update watermark only after successful commit
+        if latest_visit_time is not None:
+            self.set_pull_watermark(sqlite_conn, str(latest_visit_time))
+
+        total_applied = inserted_count + updated_by_sync_uuid_count
 
         logger.info(
-            "Pulled %s recent visits from MySQL into SQLite mirror (incremental).",
-            len(payload),
+            "Incremental MySQL->SQLite pull finished. inserted=%s updated_by_sync_uuid=%s "
+            "employee_day_conflicts=%s skipped_bad_rows=%s total_rows=%s next_watermark=%s",
+            inserted_count,
+            updated_by_sync_uuid_count,
+            employee_day_conflict_count,
+            skipped_bad_rows_count,
+            len(rows),
+            latest_visit_time,
         )
-        return len(payload)
+
+        return total_applied
+
 
     def cleanup_old_local_visits(self, sqlite_conn, cutoff_str: str) -> int:
         sqlite_cur = sqlite_conn.cursor()
