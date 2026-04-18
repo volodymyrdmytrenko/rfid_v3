@@ -202,6 +202,18 @@ class SyncService:
         )
         return pull_since_str
 
+
+    def get_pull_watermark(self, sqlite_conn, default_value: str) -> str:
+        """Backward-compatible wrapper for incremental pull watermark."""
+        return self._get_pull_since(sqlite_conn, default_value)
+
+    def set_pull_watermark(self, sqlite_conn, value: str):
+        """Backward-compatible wrapper for storing the last successful pull watermark."""
+        parsed = self._safe_parse_datetime(value)
+        formatted = self._format_datetime(parsed) if parsed else str(value)
+        self.set_sync_state_value(sqlite_conn, SYNC_STATE_KEY_LAST_PULL, formatted)
+        logger.info("Updated last pull watermark in SQLite sync_state: %s", formatted)
+
     def refresh_unsynced_count(self, sqlite_conn) -> int:
         cur = sqlite_conn.cursor()
         cur.execute("SELECT COUNT(*) AS cnt FROM visits WHERE synced = 0")
@@ -374,7 +386,7 @@ class SyncService:
         mysql_cur = mysql_conn.cursor(dictionary=True)
         sqlite_cur = sqlite_conn.cursor()
 
-        pull_since = self.get_pull_watermark(sqlite_conn, cutoff_str)
+        pull_since = self._get_pull_since(sqlite_conn, cutoff_str)
 
         logger.info(
             "Starting incremental MySQL->SQLite pull. retention_window_start=%s pull_since=%s.",
