@@ -24,7 +24,8 @@ def get_logger(name):
             LOG_FILE,
             maxBytes=2_000_000,
             backupCount=5,
-            encoding="utf-8"
+            encoding="utf-8",
+            delay=True,
         )
         fh.setFormatter(fmt)
 
