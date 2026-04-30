@@ -1,11 +1,29 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from app.utils.paths import ENV_FILE, ensure_runtime_dirs
+import msvcrt
+
+LOCK_FILE = Path("app.lock")
+
+_lock_handle = None
 
 
+def ensure_single_instance():
+    global _lock_handle
+
+    _lock_handle = open(LOCK_FILE, "w")
+
+    try:
+        msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        print("Застосунок уже запущений.")
+        sys.exit(1)
+
+ensure_single_instance()
 ensure_runtime_dirs()
 
 if ENV_FILE.exists():
