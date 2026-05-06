@@ -714,7 +714,7 @@ def build_ui(root, on_manual, on_report):
 
     status = ctk.CTkLabel(
         bottom,
-        text=f"Статус: очікую RFID… | Port: {RFID_PORT} | Чекає синхронізації: 0",
+        text=f"© VD | Статус: очікую картку… | Port: {RFID_PORT} | Чекає синхронізації: 0",
         anchor="w",
         justify="left",
     )
@@ -776,7 +776,7 @@ def main():
 
             status_label.configure(
                 text=(
-                    f"Статус: очікую RFID… | Port: {RFID_PORT} | "
+                    f"© VD | Статус: Очікую картку… | Port: {RFID_PORT} | "
                     f"Чекає синхронізації: {unsynced_count}"
                 )
             )
@@ -786,7 +786,7 @@ def main():
             logger.exception("update_status error")
             try:
                 status_label.configure(
-                    text=f"Статус: очікую RFID… | Port: {RFID_PORT} | Чекає синхронізації: ?"
+                    text=f"© VD | Статус: Очікую картку… | Port: {RFID_PORT} | Чекає синхронізації: ?"
                 )
                 today_count_label.configure(text="Сьогодні: ?")
             except Exception:
